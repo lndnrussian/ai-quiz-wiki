@@ -13,6 +13,7 @@ import {
   CHGK_TOURNAMENTS,
   getChgkQuestions,
 } from './server/chgkService';
+import db from './server/db';
 
 dotenv.config();
 
@@ -46,18 +47,53 @@ let dailyAiUsage: DailyAiTracker = {
 // In-memory pregenerated question bank
 let pregeneratedBank: WikiQuestion[] = [];
 function loadPregeneratedBank() {
-  const filePath = path.join(process.cwd(), 'data', 'generated-questions.json');
-  if (fs.existsSync(filePath)) {
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      pregeneratedBank = JSON.parse(content);
-      console.log(`[Question Bank] Loaded ${pregeneratedBank.length} pregenerated questions from ${filePath}`);
-    } catch (err) {
-      console.error('[Question Bank] Failed to parse generated-questions.json:', err);
-      pregeneratedBank = [];
-    }
-  } else {
-    console.warn(`[Question Bank] File ${filePath} not found, initializing empty bank.`);
+  try {
+    const rows = db.prepare('SELECT * FROM generated_questions').all() as any[];
+    pregeneratedBank = rows.map((row) => {
+      let options: string[] | undefined = undefined;
+      if (row.options_json) {
+        try {
+          const parsed = JSON.parse(row.options_json);
+          options = Array.isArray(parsed) ? parsed : undefined;
+        } catch {
+          options = undefined;
+        }
+      }
+
+      let acceptableAnswers: string[] | undefined = undefined;
+      if (row.acceptableAnswers_json) {
+        try {
+          const parsed = JSON.parse(row.acceptableAnswers_json);
+          acceptableAnswers = Array.isArray(parsed) ? parsed : undefined;
+        } catch {
+          acceptableAnswers = undefined;
+        }
+      }
+
+      const q: WikiQuestion = {
+        id: row.id,
+        question: row.question,
+        type: row.type || 'multiple_choice',
+        options,
+        correctAnswer: row.correctAnswer,
+        acceptableAnswers,
+        explanation: row.explanation || '',
+        articleTitle: row.articleTitle || '',
+        articleUrl: row.articleUrl || '',
+        articleExtract: row.articleExtract || undefined,
+        thumbnailUrl: row.thumbnailUrl || undefined,
+        difficulty: row.difficulty || 'medium',
+        category: row.category || '',
+        pageviews: row.pageviews ?? undefined,
+        popularityLabel: row.popularityLabel || undefined,
+        popularityTier: row.popularityTier || undefined,
+        generatedAt: row.generatedAt ?? undefined,
+      };
+      return q;
+    });
+    console.log(`[Question Bank] Loaded ${pregeneratedBank.length} pregenerated questions from SQLite database.`);
+  } catch (err) {
+    console.error('[Question Bank] Failed to load generated_questions from SQLite:', err);
     pregeneratedBank = [];
   }
 }
@@ -199,10 +235,9 @@ function shuffleArray<T>(arr: T[]): T[] {
   return result;
 }
 
-// Append newly generated questions to pregeneratedBank and persist to disk
+// Append newly generated questions to pregeneratedBank and persist to SQLite
 function appendToPregeneratedBank(newQuestions: WikiQuestion[]) {
   if (!newQuestions || newQuestions.length === 0) return;
-  const filePath = path.join(process.cwd(), 'data', 'generated-questions.json');
   try {
     const existingTitles = new Set(pregeneratedBank.map((q) => normalizeTopicString(q.articleTitle)));
     const existingQuestions = new Set(pregeneratedBank.map((q) => normalizeTopicString(q.question)));
@@ -220,13 +255,49 @@ function appendToPregeneratedBank(newQuestions: WikiQuestion[]) {
 
     if (toAdd.length > 0) {
       pregeneratedBank.push(...toAdd);
-      fs.promises.writeFile(filePath, JSON.stringify(pregeneratedBank, null, 2), 'utf-8')
-        .then(() => {
-          console.log(`[Question Bank] Saved ${toAdd.length} fresh generated questions to persistent bank. Total bank size: ${pregeneratedBank.length}`);
-        })
-        .catch((err) => {
-          console.error('[Question Bank] Error saving updated bank:', err);
-        });
+
+      const insertStmt = db.prepare(`
+        INSERT OR IGNORE INTO generated_questions (
+          id, question, type, options_json, correctAnswer, acceptableAnswers_json,
+          explanation, articleTitle, articleUrl, articleExtract, thumbnailUrl,
+          difficulty, category, pageviews, popularityLabel, popularityTier,
+          generatedAt, normalizedQuestion
+        ) VALUES (
+          @id, @question, @type, @options_json, @correctAnswer, @acceptableAnswers_json,
+          @explanation, @articleTitle, @articleUrl, @articleExtract, @thumbnailUrl,
+          @difficulty, @category, @pageviews, @popularityLabel, @popularityTier,
+          @generatedAt, @normalizedQuestion
+        )
+      `);
+
+      const insertTransaction = db.transaction((items: WikiQuestion[]) => {
+        for (const q of items) {
+          const norm = (q.question || '').toLowerCase().trim();
+          insertStmt.run({
+            id: q.id,
+            question: q.question,
+            type: q.type || 'multiple_choice',
+            options_json: JSON.stringify(q.options || []),
+            correctAnswer: q.correctAnswer,
+            acceptableAnswers_json: JSON.stringify(q.acceptableAnswers || []),
+            explanation: q.explanation ?? null,
+            articleTitle: q.articleTitle ?? null,
+            articleUrl: q.articleUrl ?? null,
+            articleExtract: q.articleExtract ?? null,
+            thumbnailUrl: q.thumbnailUrl ?? null,
+            difficulty: q.difficulty ?? null,
+            category: q.category ?? null,
+            pageviews: q.pageviews ?? null,
+            popularityLabel: q.popularityLabel ?? null,
+            popularityTier: q.popularityTier ?? null,
+            generatedAt: q.generatedAt ?? Date.now(),
+            normalizedQuestion: norm,
+          });
+        }
+      });
+
+      insertTransaction(toAdd);
+      console.log(`[Question Bank] Saved ${toAdd.length} fresh generated questions to SQLite database. Total bank size: ${pregeneratedBank.length}`);
     }
   } catch (err) {
     console.error('[Question Bank] Failed to append new questions:', err);
