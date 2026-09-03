@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { XMLParser } from 'fast-xml-parser';
+import db from './db';
 import { WikiQuestion } from '../src/types';
 
 export interface RawChgkQuestion {
@@ -192,23 +193,19 @@ function parseQuestionsFromXml(
   }
 }
 
-// Load initial questions from data/chgk-catalog.json if available
+// Load initial questions from SQLite chgk_questions table
 export function initializeChgkCatalog() {
   try {
-    const catalogPath = path.join(process.cwd(), 'data', 'chgk-catalog.json');
-    if (fs.existsSync(catalogPath)) {
-      const content = fs.readFileSync(catalogPath, 'utf-8');
-      const questions: RawChgkQuestion[] = JSON.parse(content);
-      for (const q of questions) {
-        if (!tournamentCache.has(q.tourId)) {
-          tournamentCache.set(q.tourId, []);
-        }
-        tournamentCache.get(q.tourId)!.push(q);
+    const questions = db.prepare('SELECT * FROM chgk_questions').all() as RawChgkQuestion[];
+    for (const q of questions) {
+      if (!tournamentCache.has(q.tourId)) {
+        tournamentCache.set(q.tourId, []);
       }
-      console.log(`[ChGK Service] Loaded ${questions.length} questions across ${tournamentCache.size} tournaments into cache.`);
+      tournamentCache.get(q.tourId)!.push(q);
     }
+    console.log(`[ChGK Service] Loaded ${questions.length} questions across ${tournamentCache.size} tournaments into cache from SQLite.`);
   } catch (err) {
-    console.error('[ChGK Service] Error loading chgk-catalog.json:', err);
+    console.error('[ChGK Service] Error loading questions from chgk_questions table:', err);
   }
 }
 
@@ -284,7 +281,42 @@ export async function getQuestionsForTournament(tourId: string): Promise<RawChgk
         // Sort questions by questionNumber
         questions.sort((a, b) => a.questionNumber - b.questionNumber);
         tournamentCache.set(targetId, questions);
-        console.log(`[ChGK Service] Successfully cached ${questions.length} questions from XML for ${targetId}`);
+
+        // Persist into SQLite chgk_questions table (INSERT OR IGNORE)
+        try {
+          const insertStmt = db.prepare(`
+            INSERT OR IGNORE INTO chgk_questions (
+              id, tournamentTitle, tourId, tournamentUrl, questionUrl,
+              questionNumber, question, answer, passCriteria, comments, sources, authors
+            ) VALUES (
+              @id, @tournamentTitle, @tourId, @tournamentUrl, @questionUrl,
+              @questionNumber, @question, @answer, @passCriteria, @comments, @sources, @authors
+            )
+          `);
+          const insertBatch = db.transaction((items: RawChgkQuestion[]) => {
+            for (const item of items) {
+              insertStmt.run({
+                id: item.id,
+                tournamentTitle: item.tournamentTitle ?? null,
+                tourId: item.tourId ?? null,
+                tournamentUrl: item.tournamentUrl ?? null,
+                questionUrl: item.questionUrl ?? null,
+                questionNumber: item.questionNumber ?? null,
+                question: item.question ?? '',
+                answer: item.answer ?? '',
+                passCriteria: item.passCriteria ?? null,
+                comments: item.comments ?? null,
+                sources: item.sources ?? null,
+                authors: item.authors ?? null,
+              });
+            }
+          });
+          insertBatch(questions);
+        } catch (dbErr) {
+          console.warn('[ChGK Service] Error saving live questions to SQLite chgk_questions:', dbErr);
+        }
+
+        console.log(`[ChGK Service] Successfully cached and persisted ${questions.length} questions from XML for ${targetId}`);
         return questions;
       }
     } else {
