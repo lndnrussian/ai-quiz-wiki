@@ -90,12 +90,24 @@ export default function App() {
     return Array.from(new Set([...fromState, ...fromQueue, ...fromCurrent, ...fromHistory, ...fromSeenPersistent])).filter(Boolean);
   }, [usedArticleTitles, questionQueue, currentQuestion, activeProfile.stats.history, activeProfile.stats.seenArticleTitles]);
 
+  // Helper to get comprehensive list of all excluded question IDs
+  const getAllExcludedIds = useCallback(() => {
+    const fromQueue = questionQueue.map((q) => q.id);
+    const fromCurrent = currentQuestion ? [currentQuestion.id] : [];
+    const fromHistory = (activeProfile.stats.history || []).map((h) => h.question?.id);
+    return Array.from(new Set([...fromQueue, ...fromCurrent, ...fromHistory])).filter(Boolean);
+  }, [questionQueue, currentQuestion, activeProfile.stats.history]);
+
   // Current Question Answer State
   const [isAnswered, setIsAnswered] = useState<boolean>(false);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [isEvaluatingOpen, setIsEvaluatingOpen] = useState<boolean>(false);
   const [openEvaluationResult, setOpenEvaluationResult] = useState<{ isCorrect: boolean; feedback: string; similarity: number } | null>(null);
   const questionStartTimeRef = useRef<number>(Date.now());
+
+  // Background prefetching guards
+  const isPrefetchingRef = useRef<boolean>(false);
+  const prefetchCooldownUntilRef = useRef<number>(0);
 
   // Loading & Network States
   const [isLoadingInitial, setIsLoadingInitial] = useState<boolean>(false);
@@ -151,6 +163,7 @@ export default function App() {
             category: cat,
             count,
             excludeTitles: exclude,
+            excludeIds: getAllExcludedIds(),
             engineSource: engine,
             chgkTournamentId: tournamentId,
           }),
@@ -164,7 +177,7 @@ export default function App() {
         return [];
       }
     },
-    [roundConfig.engineSource, roundConfig.chgkTournamentId]
+    [roundConfig.engineSource, roundConfig.chgkTournamentId, getAllExcludedIds]
   );
 
   // Reset answer states for next question
@@ -184,6 +197,8 @@ export default function App() {
     resetAnswerState();
     setSessionAnswers([]);
     setQuestionNumber(1);
+    prefetchCooldownUntilRef.current = 0;
+    isPrefetchingRef.current = false;
 
     // Setup mode specific state
     if (gameMode === 'blitz') {
@@ -200,21 +215,44 @@ export default function App() {
     setGameState('playing');
 
     const currentExcludes = getAllExcludedTitles();
+    const currentExcludeIds = new Set(getAllExcludedIds());
     const questions = await fetchQuestions(difficulty, formatFilter, selectedCategory, 3, currentExcludes);
 
     if (questions.length > 0) {
-      const [first, ...rest] = questions;
-      setCurrentQuestion(first);
-      setQuestionQueue(rest);
-      const allFetchedTitles = questions.map((q) => q.articleTitle).filter(Boolean);
-      setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...allFetchedTitles])));
-      
-      const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(allFetchedTitles);
-      setActiveProfile(updatedP);
-      setAllProfiles(updatedAll);
+      const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
+      const seenQuestions = new Set<string>();
+      const uniqueBatch: WikiQuestion[] = [];
 
-      if (first.category) setRecentCategories((prev) => [...prev.slice(-5), first.category]);
-      questionStartTimeRef.current = Date.now();
+      for (const q of questions) {
+        const normT = (q.articleTitle || '').toLowerCase().trim();
+        const normQ = (q.question || '').toLowerCase().trim();
+        if (
+          !seenTitles.has(normT) &&
+          !seenQuestions.has(normQ) &&
+          !currentExcludeIds.has(q.id)
+        ) {
+          if (normT) seenTitles.add(normT);
+          if (normQ) seenQuestions.add(normQ);
+          uniqueBatch.push(q);
+        }
+      }
+
+      if (uniqueBatch.length > 0) {
+        const [first, ...rest] = uniqueBatch;
+        setCurrentQuestion(first);
+        setQuestionQueue(rest);
+        const allFetchedTitles = uniqueBatch.map((q) => q.articleTitle).filter(Boolean);
+        setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...allFetchedTitles])));
+        
+        const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(allFetchedTitles);
+        setActiveProfile(updatedP);
+        setAllProfiles(updatedAll);
+
+        if (first.category) setRecentCategories((prev) => [...prev.slice(-5), first.category]);
+        questionStartTimeRef.current = Date.now();
+      } else {
+        setNetworkError('Не удалось подобрать новые уникальные вопросы по выбранным параметрам. Попробуйте сменить категорию или сложность.');
+      }
     } else {
       setNetworkError('Не удалось загрузить вопросы по выбранным параметрам. Попробуйте снова.');
     }
@@ -223,35 +261,89 @@ export default function App() {
 
   // Background Prefetch Queue refill when queue is low
   useEffect(() => {
-    if (gameState === 'playing' && questionQueue.length < 2 && !isLoadingNext && !isLoadingInitial && currentQuestion) {
-      const currentExcludes = getAllExcludedTitles();
-      fetchQuestions(difficulty, formatFilter, selectedCategory, 2, currentExcludes).then((newItems) => {
+    if (
+      gameState !== 'playing' ||
+      questionQueue.length >= 2 ||
+      isLoadingNext ||
+      isLoadingInitial ||
+      !currentQuestion ||
+      isPrefetchingRef.current ||
+      Date.now() < prefetchCooldownUntilRef.current
+    ) {
+      return;
+    }
+
+    isPrefetchingRef.current = true;
+    const currentExcludes = getAllExcludedTitles();
+    const currentExcludeIds = new Set(getAllExcludedIds());
+
+    fetchQuestions(difficulty, formatFilter, selectedCategory, 2, currentExcludes)
+      .then((newItems) => {
         if (newItems.length > 0) {
-          const seen = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
-          const uniqueNew = newItems.filter((q) => !seen.has(q.articleTitle.toLowerCase().trim()));
+          const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
+          const seenQuestions = new Set<string>();
+
+          const uniqueNew = newItems.filter((q) => {
+            const normT = (q.articleTitle || '').toLowerCase().trim();
+            const normQ = (q.question || '').toLowerCase().trim();
+            const isExcluded =
+              seenTitles.has(normT) ||
+              seenQuestions.has(normQ) ||
+              currentExcludeIds.has(q.id);
+
+            if (!isExcluded) {
+              if (normT) seenTitles.add(normT);
+              if (normQ) seenQuestions.add(normQ);
+              return true;
+            }
+            return false;
+          });
 
           if (uniqueNew.length > 0) {
-            setQuestionQueue((prev) => [...prev, ...uniqueNew]);
+            setQuestionQueue((prev) => {
+              const existingIds = new Set(prev.map((p) => p.id));
+              const existingTitles = new Set(prev.map((p) => (p.articleTitle || '').toLowerCase().trim()));
+              const existingQuestions = new Set(prev.map((p) => (p.question || '').toLowerCase().trim()));
+
+              const filtered = uniqueNew.filter(
+                (u) =>
+                  !existingIds.has(u.id) &&
+                  !existingTitles.has((u.articleTitle || '').toLowerCase().trim()) &&
+                  !existingQuestions.has((u.question || '').toLowerCase().trim())
+              );
+              return [...prev, ...filtered];
+            });
+
             const newTitles = uniqueNew.map((q) => q.articleTitle).filter(Boolean);
             setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
             const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
             setActiveProfile(updatedP);
             setAllProfiles(updatedAll);
+          } else {
+            // No unique questions received; back off prefetch for 15 seconds to prevent runaway loop
+            prefetchCooldownUntilRef.current = Date.now() + 15000;
           }
+        } else {
+          // Empty response; back off prefetch for 15 seconds
+          prefetchCooldownUntilRef.current = Date.now() + 15000;
         }
+      })
+      .catch((err) => {
+        console.warn('Background prefetch failed:', err);
+        prefetchCooldownUntilRef.current = Date.now() + 15000;
+      })
+      .finally(() => {
+        isPrefetchingRef.current = false;
       });
-    }
   }, [
     gameState,
     questionQueue.length,
     difficulty,
     formatFilter,
     selectedCategory,
-    getAllExcludedTitles,
     isLoadingNext,
     isLoadingInitial,
-    currentQuestion,
-    fetchQuestions,
+    currentQuestion?.id,
   ]);
 
   // Blitz Mode Countdown Timer
@@ -389,18 +481,32 @@ export default function App() {
         setIsLoadingInitial(true);
         resetAnswerState();
         const currentExcludes = getAllExcludedTitles();
+        const currentExcludeIds = new Set(getAllExcludedIds());
         const newItems = await fetchQuestions(difficulty, newFmt, selectedCategory, 2, currentExcludes);
-        if (newItems.length > 0) {
-          const [nextQ, ...rest] = newItems;
+
+        const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
+        const uniqueItems = newItems.filter(
+          (q) =>
+            !seenTitles.has((q.articleTitle || '').toLowerCase().trim()) &&
+            !currentExcludeIds.has(q.id)
+        );
+
+        if (uniqueItems.length > 0) {
+          const [nextQ, ...rest] = uniqueItems;
           setCurrentQuestion(nextQ);
           setQuestionQueue(rest);
-          const newTitles = newItems.map((q) => q.articleTitle).filter(Boolean);
+          const newTitles = uniqueItems.map((q) => q.articleTitle).filter(Boolean);
           setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
           const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
           setActiveProfile(updatedP);
           setAllProfiles(updatedAll);
           if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
           setNetworkError(null);
+        } else if (newItems.length > 0) {
+          // Fallback to first if all were seen
+          const [nextQ, ...rest] = newItems;
+          setCurrentQuestion(nextQ);
+          setQuestionQueue(rest);
         }
         setIsLoadingInitial(false);
       }
@@ -421,18 +527,31 @@ export default function App() {
       setIsLoadingInitial(true);
       resetAnswerState();
       const currentExcludes = getAllExcludedTitles();
+      const currentExcludeIds = new Set(getAllExcludedIds());
       const newItems = await fetchQuestions(difficulty, formatFilter, cat, 2, currentExcludes);
-      if (newItems.length > 0) {
-        const [nextQ, ...rest] = newItems;
+
+      const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
+      const uniqueItems = newItems.filter(
+        (q) =>
+          !seenTitles.has((q.articleTitle || '').toLowerCase().trim()) &&
+          !currentExcludeIds.has(q.id)
+      );
+
+      if (uniqueItems.length > 0) {
+        const [nextQ, ...rest] = uniqueItems;
         setCurrentQuestion(nextQ);
         setQuestionQueue(rest);
-        const newTitles = newItems.map((q) => q.articleTitle).filter(Boolean);
+        const newTitles = uniqueItems.map((q) => q.articleTitle).filter(Boolean);
         setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
         const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
         setActiveProfile(updatedP);
         setAllProfiles(updatedAll);
         if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
         setNetworkError(null);
+      } else if (newItems.length > 0) {
+        const [nextQ, ...rest] = newItems;
+        setCurrentQuestion(nextQ);
+        setQuestionQueue(rest);
       }
       setIsLoadingInitial(false);
     }
@@ -440,39 +559,79 @@ export default function App() {
 
   // Load next question or finish Sprint
   const loadNextQuestion = async () => {
+    if (isLoadingNext || isLoadingInitial) return;
+
     // Check if Sprint round is completed
     if (gameMode === 'sprint' && questionNumber >= sprintQuestionCount) {
       setIsGameOverOpen(true);
       return;
     }
 
-    resetAnswerState();
-    setQuestionNumber((prev) => prev + 1);
-
     if (questionQueue.length > 0) {
+      resetAnswerState();
+      setQuestionNumber((prev) => prev + 1);
+
       const [nextQ, ...rest] = questionQueue;
       setCurrentQuestion(nextQ);
       setQuestionQueue(rest);
       setUsedArticleTitles((prev) => Array.from(new Set([...prev, nextQ.articleTitle])));
       if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
+      questionStartTimeRef.current = Date.now();
+      setNetworkError(null);
     } else {
       setIsLoadingNext(true);
-      const currentExcludes = getAllExcludedTitles();
-      const newItems = await fetchQuestions(difficulty, formatFilter, selectedCategory, 2, currentExcludes);
-      if (newItems.length > 0) {
-        const [nextQ, ...rest] = newItems;
-        setCurrentQuestion(nextQ);
-        setQuestionQueue(rest);
-        const newTitles = newItems.map((q) => q.articleTitle).filter(Boolean);
-        setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
-        const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
-        setActiveProfile(updatedP);
-        setAllProfiles(updatedAll);
-        if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
-      } else {
-        setNetworkError('Не удалось загрузить следующий вопрос. Попробуйте снова.');
+      try {
+        const currentExcludes = getAllExcludedTitles();
+        const currentExcludeIds = new Set(getAllExcludedIds());
+        const newItems = await fetchQuestions(difficulty, formatFilter, selectedCategory, 2, currentExcludes);
+
+        if (newItems.length > 0) {
+          const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
+          const seenQuestions = new Set<string>();
+
+          const uniqueNew = newItems.filter((q) => {
+            const normT = (q.articleTitle || '').toLowerCase().trim();
+            const normQ = (q.question || '').toLowerCase().trim();
+            const isExcluded =
+              seenTitles.has(normT) ||
+              seenQuestions.has(normQ) ||
+              currentExcludeIds.has(q.id);
+
+            if (!isExcluded) {
+              if (normT) seenTitles.add(normT);
+              if (normQ) seenQuestions.add(normQ);
+              return true;
+            }
+            return false;
+          });
+
+          if (uniqueNew.length > 0) {
+            resetAnswerState();
+            setQuestionNumber((prev) => prev + 1);
+
+            const [nextQ, ...rest] = uniqueNew;
+            setCurrentQuestion(nextQ);
+            setQuestionQueue(rest);
+            const newTitles = uniqueNew.map((q) => q.articleTitle).filter(Boolean);
+            setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
+            const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
+            setActiveProfile(updatedP);
+            setAllProfiles(updatedAll);
+            if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
+            questionStartTimeRef.current = Date.now();
+            setNetworkError(null);
+          } else {
+            setNetworkError('Больше нет уникальных вопросов в выбранной категории. Попробуйте сменить категорию или сложность.');
+          }
+        } else {
+          setNetworkError('Не удалось загрузить следующий вопрос. Попробуйте снова.');
+        }
+      } catch (err) {
+        console.error('Failed to load next question:', err);
+        setNetworkError('Ошибка при загрузке вопроса. Попробуйте снова.');
+      } finally {
+        setIsLoadingNext(false);
       }
-      setIsLoadingNext(false);
     }
   };
 

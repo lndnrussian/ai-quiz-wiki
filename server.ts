@@ -594,9 +594,9 @@ function resolveTopic(inputTopic?: string): { isAll: boolean; canonicalName: str
   };
 }
 
-// Check if a question is related to any excluded title (strict matching without destructive substring false-positives)
+// Check if a question is related to any excluded title or ID (strict matching without destructive substring false-positives)
 function isQuestionExcluded(
-  q: { articleTitle: string; question: string; correctAnswer: string },
+  q: { id?: string; articleTitle: string; question: string; correctAnswer: string },
   excludeTitles: string[]
 ): boolean {
   if (!excludeTitles || excludeTitles.length === 0) return false;
@@ -604,8 +604,13 @@ function isQuestionExcluded(
   const cleanTitle = normalizeTopicString(q.articleTitle);
   const cleanQ = normalizeTopicString(q.question);
   const cleanAns = normalizeTopicString(q.correctAnswer);
+  const qId = q.id ? String(q.id).toLowerCase().trim() : '';
 
   for (const exc of excludeTitles) {
+    if (!exc) continue;
+    const excRaw = String(exc).toLowerCase().trim();
+    if (qId && qId === excRaw) return true;
+
     const cleanExc = normalizeTopicString(exc);
     if (!cleanExc || cleanExc.length < 2) continue;
 
@@ -618,8 +623,8 @@ function isQuestionExcluded(
     // 3. Exact match with correct answer
     if (cleanAns === cleanExc) return true;
 
-    // 4. Substantial prefix or suffix match on title (at least 5 characters)
-    if (cleanExc.length >= 5) {
+    // 4. Substantial prefix or suffix match on title (at least 4 characters)
+    if (cleanExc.length >= 4) {
       if (cleanTitle.startsWith(cleanExc) || cleanTitle.endsWith(cleanExc)) {
         return true;
       }
@@ -927,10 +932,12 @@ function getCuratedQuestions(
       return true;
     });
 
-    if (candidates.length > 0) {
-      pool = candidates;
-      if (pool.length >= count) break;
+    for (const c of candidates) {
+      if (!pool.some((p) => p.id === c.id || normalizeTopicString(p.articleTitle) === normalizeTopicString(c.articleTitle))) {
+        pool.push(c);
+      }
     }
+    if (pool.length >= count) break;
   }
 
   // Stage 2: If pool still insufficient for specific category, relax format within allowed difficulty tier
@@ -943,55 +950,86 @@ function getCuratedQuestions(
         if (!allowedDiffs.includes(q.difficulty || 'medium')) return false;
         return true;
       });
-      if (candidates.length > 0) {
-        pool = candidates;
-        if (pool.length >= count) break;
+      for (const c of candidates) {
+        if (!pool.some((p) => p.id === c.id || normalizeTopicString(p.articleTitle) === normalizeTopicString(c.articleTitle))) {
+          pool.push(c);
+        }
+      }
+      if (pool.length >= count) break;
+    }
+  }
+
+  // Stage 3: If still insufficient for specific category, look at ANY difficulty within that category (still excluding seen)
+  if (pool.length < count && !isAll) {
+    const candidates = comprehensiveFallbackQuestions.filter((q) => {
+      if (isQuestionExcluded(q, excludeTitles)) return false;
+      if (detectAnswerLeak(q.question, q.correctAnswer, q.acceptableAnswers).hasLeak) return false;
+      if (!matchesCat(q)) return false;
+      return true;
+    });
+    for (const c of candidates) {
+      if (!pool.some((p) => p.id === c.id || normalizeTopicString(p.articleTitle) === normalizeTopicString(c.articleTitle))) {
+        pool.push(c);
       }
     }
   }
 
-  // Stage 3: If 'all' was requested and pool still empty, select across categories within allowed difficulty tier
-  if (pool.length === 0 && isAll) {
-    for (const allowedDiffs of difficultyTiers) {
-      const candidates = comprehensiveFallbackQuestions.filter((q) => {
-        if (isQuestionExcluded(q, excludeTitles)) return false;
-        if (detectAnswerLeak(q.question, q.correctAnswer, q.acceptableAnswers).hasLeak) return false;
-        if (!matchesFormat(q.type)) return false;
-        if (!allowedDiffs.includes(q.difficulty || 'medium')) return false;
-        return true;
-      });
-      if (candidates.length > 0) {
-        pool = candidates;
-        break;
+  // Stage 4: If still insufficient, expand across ALL categories while STILL STRICTLY EXCLUDING seen titles
+  if (pool.length < count) {
+    const candidates = comprehensiveFallbackQuestions.filter((q) => {
+      if (isQuestionExcluded(q, excludeTitles)) return false;
+      if (detectAnswerLeak(q.question, q.correctAnswer, q.acceptableAnswers).hasLeak) return false;
+      return true;
+    });
+    for (const c of candidates) {
+      if (!pool.some((p) => p.id === c.id || normalizeTopicString(p.articleTitle) === normalizeTopicString(c.articleTitle))) {
+        pool.push(c);
       }
     }
   }
 
-  // Absolute fallback if pool is still empty
+  // Stage 5: Safety valve: if all questions in the entire curated bank have been seen,
+  // exclude only the most recently seen items (last 5) so the user never sees an immediate duplicate
   if (pool.length === 0) {
-    pool = comprehensiveFallbackQuestions;
+    const immediateExcludes = excludeTitles.slice(-5);
+    pool = comprehensiveFallbackQuestions.filter((q) => !isQuestionExcluded(q, immediateExcludes));
+    if (pool.length === 0) {
+      pool = comprehensiveFallbackQuestions;
+    }
   }
 
-  const shuffled = [...pool].sort(() => 0.5 - Math.random());
+  const shuffled = shuffleArray(pool);
   const selected: typeof comprehensiveFallbackQuestions = [];
   const usedCategories = new Set<string>();
+  const usedTitles = new Set<string>();
 
   for (const item of shuffled) {
     if (selected.length >= count) break;
-    // Enforce distinct categories for variety when in 'all' mode
+    const normT = normalizeTopicString(item.articleTitle);
+    const normQ = normalizeTopicString(item.question);
+    if (usedTitles.has(normT) || usedTitles.has(normQ)) continue;
+
     if (isAll && !usedCategories.has(item.category)) {
       selected.push(item);
       usedCategories.add(item.category);
+      usedTitles.add(normT);
+      usedTitles.add(normQ);
     } else if (!isAll) {
       selected.push(item);
+      usedTitles.add(normT);
+      usedTitles.add(normQ);
     }
   }
 
   // Fill remainder if needed
   for (const item of shuffled) {
     if (selected.length >= count) break;
-    if (!selected.some((s) => s.id === item.id || s.articleTitle === item.articleTitle)) {
+    const normT = normalizeTopicString(item.articleTitle);
+    const normQ = normalizeTopicString(item.question);
+    if (!usedTitles.has(normT) && !usedTitles.has(normQ)) {
       selected.push(item);
+      usedTitles.add(normT);
+      usedTitles.add(normQ);
     }
   }
 
@@ -1000,8 +1038,8 @@ function getCuratedQuestions(
     const formatted = formatQuestionToRequestedType(q, format);
     return {
       ...formatted,
-      id: `curated-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      category: !isAll ? targetCategory : formatted.category,
+      id: q.id || `curated-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      category: !isAll && matchesCat(q) ? targetCategory : formatted.category,
     };
   });
 }
@@ -1030,7 +1068,7 @@ function getDifficultyCandidateTiers(requestedDifficulty: string): string[][] {
   }
 }
 
-// Retrieve questions from the pregenerated question bank (data/generated-questions.json)
+// Retrieve questions from the pregenerated question bank (data/generated-questions.json / SQLite)
 function getQuestionsFromBank(
   category: string = 'all',
   format: string = 'random',
@@ -1073,32 +1111,89 @@ function getQuestionsFromBank(
       return true;
     });
 
-    if (candidates.length > 0) {
-      pool = candidates;
+    for (const c of candidates) {
+      if (!pool.some((p) => p.id === c.id || normalizeTopicString(p.articleTitle) === normalizeTopicString(c.articleTitle))) {
+        pool.push(c);
+      }
+    }
+    if (pool.length >= count) break;
+  }
+
+  // If pool still insufficient for specific category, relax format within difficulty tiers
+  if (pool.length < count && !isAllCat) {
+    for (const allowedDiffs of difficultyTiers) {
+      const candidates = pregeneratedBank.filter((q) => {
+        if (isQuestionExcluded(q, excludeTitles)) return false;
+        if (excludeSet.has(normalizeTopicString(q.articleTitle))) return false;
+        if (detectAnswerLeak(q.question, q.correctAnswer, q.acceptableAnswers).hasLeak) return false;
+
+        const qCatNorm = (q.category || '').toLowerCase();
+        const targetNorm = resolved.canonicalName.toLowerCase();
+        if (!qCatNorm.includes(targetNorm) && !targetNorm.includes(qCatNorm)) return false;
+        if (!allowedDiffs.includes(q.difficulty || 'medium')) return false;
+        return true;
+      });
+
+      for (const c of candidates) {
+        if (!pool.some((p) => p.id === c.id || normalizeTopicString(p.articleTitle) === normalizeTopicString(c.articleTitle))) {
+          pool.push(c);
+        }
+      }
       if (pool.length >= count) break;
     }
   }
 
-  // Step 3: If category was 'all', ensure variety across topics
-  const shuffled = [...pool].sort(() => 0.5 - Math.random());
-  const selected: WikiQuestion[] = [];
-  const usedCategories = new Set<string>();
+  // If pool still insufficient for specific category, relax difficulty across that category
+  if (pool.length < count && !isAllCat) {
+    const candidates = pregeneratedBank.filter((q) => {
+      if (isQuestionExcluded(q, excludeTitles)) return false;
+      if (excludeSet.has(normalizeTopicString(q.articleTitle))) return false;
+      if (detectAnswerLeak(q.question, q.correctAnswer, q.acceptableAnswers).hasLeak) return false;
 
-  for (const item of shuffled) {
-    if (selected.length >= count) break;
-    if (isAllCat && item.category && !usedCategories.has(item.category)) {
-      selected.push(item);
-      usedCategories.add(item.category);
-    } else if (!isAllCat) {
-      selected.push(item);
+      const qCatNorm = (q.category || '').toLowerCase();
+      const targetNorm = resolved.canonicalName.toLowerCase();
+      return qCatNorm.includes(targetNorm) || targetNorm.includes(qCatNorm);
+    });
+
+    for (const c of candidates) {
+      if (!pool.some((p) => p.id === c.id || normalizeTopicString(p.articleTitle) === normalizeTopicString(c.articleTitle))) {
+        pool.push(c);
+      }
     }
   }
 
-  // Fill remaining slots if any
+  const shuffled = shuffleArray(pool);
+  const selected: WikiQuestion[] = [];
+  const usedCategories = new Set<string>();
+  const usedTitles = new Set<string>();
+
   for (const item of shuffled) {
     if (selected.length >= count) break;
-    if (!selected.some((s) => s.articleTitle === item.articleTitle || s.question === item.question)) {
+    const normT = normalizeTopicString(item.articleTitle);
+    const normQ = normalizeTopicString(item.question);
+    if (usedTitles.has(normT) || usedTitles.has(normQ)) continue;
+
+    if (isAllCat && item.category && !usedCategories.has(item.category)) {
       selected.push(item);
+      usedCategories.add(item.category);
+      usedTitles.add(normT);
+      usedTitles.add(normQ);
+    } else if (!isAllCat) {
+      selected.push(item);
+      usedTitles.add(normT);
+      usedTitles.add(normQ);
+    }
+  }
+
+  // Fill remaining slots if any without title or question collision
+  for (const item of shuffled) {
+    if (selected.length >= count) break;
+    const normT = normalizeTopicString(item.articleTitle);
+    const normQ = normalizeTopicString(item.question);
+    if (!usedTitles.has(normT) && !usedTitles.has(normQ)) {
+      selected.push(item);
+      usedTitles.add(normT);
+      usedTitles.add(normQ);
     }
   }
 
@@ -1106,7 +1201,8 @@ function getQuestionsFromBank(
     const formatted = formatQuestionToRequestedType(q, format);
     return {
       ...formatted,
-      id: `bank-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      // Preserve stable question ID
+      id: q.id || `bank-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       category: !isAllCat ? resolved.canonicalName : formatted.category,
     };
   });
@@ -1299,10 +1395,11 @@ async function startServer() {
 
     const resolved = resolveTopic(category);
     const { ai, isCustomKey, quotaExceeded } = getAiClientForRequest(req);
+    const allExcludes = Array.from(new Set([...(excludeTitles || []), ...(excludeIds || [])].filter(Boolean)));
 
     // 1. PRIMARY FAST STRATEGY: Serve from pre-generated question bank if enough UNUSED items exist
     const bankItems = !isCustomKey
-      ? getQuestionsFromBank(category, format, difficulty, count, excludeTitles)
+      ? getQuestionsFromBank(category, format, difficulty, count, allExcludes)
       : [];
 
     if (bankItems.length >= count) {
@@ -1314,7 +1411,7 @@ async function startServer() {
 
     // 2. DYNAMIC GENERATION STRATEGY: If bank does not have enough unseen questions, generate brand-new ones with Gemini from Wikipedia
     const neededFromAi = count - bankItems.length;
-    const initialExcludes = [...excludeTitles, ...bankItems.map((b) => b.articleTitle)];
+    const initialExcludes = [...allExcludes, ...bankItems.map((b) => b.articleTitle), ...bankItems.map((b) => b.id)];
 
     // If AI is offline or daily server budget cap reached, fallback to curated dataset
     if (!ai || quotaExceeded) {
@@ -1461,7 +1558,7 @@ ${wikiContext ? `Реальные статьи Википедии для кон�
 
       if (!text) {
         // Fallback gracefully without error
-        const items = getCuratedQuestions(category, format, difficulty, count, excludeTitles);
+        const items = getCuratedQuestions(category, format, difficulty, count, allExcludes);
         return res.json({
           questions: items,
           source: 'curated_resilient_fallback',
@@ -1475,7 +1572,7 @@ ${wikiContext ? `Реальные статьи Википедии для кон�
 
       // Track titles seen during this batch to prevent intra-batch duplicates
       const seenTitlesInBatch = new Set<string>();
-      const accumulatedExclude = [...excludeTitles];
+      const accumulatedExclude = [...allExcludes];
 
       // Enrich with unique IDs, validate options, and perform anti-repetition replacement
       const finalized = [];
