@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ВикиВикторина — Генератор вопросов из Википедии</title>
+    <meta name="description" content="Интеллектуальная викторина на русском языке с вопросами из Википедии и турнирной базы «Что? Где? Когда?» (db.chgk.info) с опциями игры с часами (60 сек) и без ограничения времени." />
+    <meta property="og:title" content="ВикиВикторина" />
+    <meta property="og:description" content="Интеллектуальная викторина на русском языке с вопросами из Википедии и турнирной базы «Что? Где? Когда?» (db.chgk.info) с опциями игры с часами (60 сек) и без ограничения времени." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400;1,6..72,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        try {
+          var _fetch = typeof window !== 'undefined' && window.fetch ? window.fetch.bind(window) : undefined;
+          
+          var defineFetch = function(target) {
+            if (!target) return;
+            try {
+              Object.defineProperty(target, 'fetch', {
+                get: function() {
+                  return _fetch;
+                },
+                set: function(fn) {
+                  _fetch = fn;
+                },
+                configurable: true,
+                enumerable: true
+              });
+            } catch (e) {}
+          };
+
+          // Define on window, Window.prototype, and globalThis
+          defineFetch(window);
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            defineFetch(Window.prototype);
+          }
+          if (typeof globalThis !== 'undefined') {
+            defineFetch(globalThis);
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-[#F9F7F2] text-[#1A1A1A] min-h-screen selection:bg-[#1A1A1A] selection:text-[#F9F7F2] antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

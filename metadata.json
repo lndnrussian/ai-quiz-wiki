@@ -1,0 +1,8 @@
+{
+  "name": "ВикиВикторина",
+  "description": "Интеллектуальная викторина на русском языке с вопросами из Википедии и турнирной базы «Что? Где? Когда?» (db.chgk.info) с опциями игры с часами (60 сек) и без ограничения времени.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
