@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import cron, { ScheduledTask } from 'node-cron';
 import { GoogleGenAI, Type } from '@google/genai';
+import db from './db';
 import { WikiQuestion, DifficultyLevel } from '../src/types';
 
 const DATA_FILE = path.join(process.cwd(), 'data', 'generated-questions.json');
@@ -294,70 +295,137 @@ export function findSimilarQuestion(
   return { isSimilar: false };
 }
 
-// Read current bank from file
+// Read current bank from SQLite
 export function readExistingBank(): WikiQuestion[] {
-  if (!fs.existsSync(DATA_FILE)) return [];
   try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
+    const rows = db.prepare('SELECT * FROM generated_questions').all() as any[];
+    return rows.map((row) => {
+      let options: string[] | undefined = undefined;
+      if (row.options_json) {
+        try {
+          const parsed = JSON.parse(row.options_json);
+          options = Array.isArray(parsed) ? parsed : undefined;
+        } catch {
+          options = undefined;
+        }
+      }
+
+      let acceptableAnswers: string[] | undefined = undefined;
+      if (row.acceptableAnswers_json) {
+        try {
+          const parsed = JSON.parse(row.acceptableAnswers_json);
+          acceptableAnswers = Array.isArray(parsed) ? parsed : undefined;
+        } catch {
+          acceptableAnswers = undefined;
+        }
+      }
+
+      const q: WikiQuestion = {
+        id: row.id,
+        question: row.question,
+        type: row.type || 'multiple_choice',
+        options,
+        correctAnswer: row.correctAnswer,
+        acceptableAnswers,
+        explanation: row.explanation || '',
+        articleTitle: row.articleTitle || '',
+        articleUrl: row.articleUrl || '',
+        articleExtract: row.articleExtract || undefined,
+        thumbnailUrl: row.thumbnailUrl || undefined,
+        difficulty: row.difficulty || 'medium',
+        category: row.category || '',
+        pageviews: row.pageviews ?? undefined,
+        popularityLabel: row.popularityLabel || undefined,
+        popularityTier: row.popularityTier || undefined,
+        generatedAt: row.generatedAt ?? undefined,
+      };
+      return q;
+    });
   } catch (err) {
-    console.warn('⚠️ [Question Growth Job] Warning: Could not parse existing data file:', err);
+    console.warn('⚠️ [Question Growth Job] Warning: Could not read generated_questions from SQLite:', err);
     return [];
   }
 }
 
 // Safe helper to append newly generated questions without replacement
 export function appendAndSaveQuestions(newItems: WikiQuestion[]): { added: number; skipped: number; total: number } {
+  const currentBank = readExistingBank();
   if (newItems.length === 0) {
-    const current = readExistingBank();
-    return { added: 0, skipped: 0, total: current.length };
+    return { added: 0, skipped: 0, total: currentBank.length };
   }
 
-  const currentOnDisk = readExistingBank();
-  const existingList = [...currentOnDisk];
-  const map = new Map<string, WikiQuestion>();
-
-  for (const q of currentOnDisk) {
-    const norm = q.question.toLowerCase().trim();
-    if (norm && !map.has(norm)) {
-      map.set(norm, q);
-    }
-  }
-  const previousCount = map.size;
+  const existingList = [...currentBank];
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO generated_questions (
+      id, question, type, options_json, correctAnswer, acceptableAnswers_json,
+      explanation, articleTitle, articleUrl, articleExtract, thumbnailUrl,
+      difficulty, category, pageviews, popularityLabel, popularityTier,
+      generatedAt, normalizedQuestion
+    ) VALUES (
+      @id, @question, @type, @options_json, @correctAnswer, @acceptableAnswers_json,
+      @explanation, @articleTitle, @articleUrl, @articleExtract, @thumbnailUrl,
+      @difficulty, @category, @pageviews, @popularityLabel, @popularityTier,
+      @generatedAt, @normalizedQuestion
+    )
+  `);
 
   let addedCount = 0;
   let skippedCount = 0;
 
-  for (const q of newItems) {
-    const norm = q.question.toLowerCase().trim();
-    if (!norm) continue;
+  const insertTransaction = db.transaction((items: WikiQuestion[]) => {
+    for (const q of items) {
+      const norm = (q.question || '').toLowerCase().trim();
+      if (!norm) {
+        skippedCount++;
+        continue;
+      }
 
-    const simCheck = findSimilarQuestion(q, existingList);
-    if (simCheck.isSimilar) {
-      skippedCount++;
-      continue;
+      const simCheck = findSimilarQuestion(q, existingList);
+      if (simCheck.isSimilar) {
+        skippedCount++;
+        continue;
+      }
+
+      const info = insertStmt.run({
+        id: q.id,
+        question: q.question,
+        type: q.type || 'multiple_choice',
+        options_json: JSON.stringify(q.options || []),
+        correctAnswer: q.correctAnswer,
+        acceptableAnswers_json: JSON.stringify(q.acceptableAnswers || []),
+        explanation: q.explanation ?? null,
+        articleTitle: q.articleTitle ?? null,
+        articleUrl: q.articleUrl ?? null,
+        articleExtract: q.articleExtract ?? null,
+        thumbnailUrl: q.thumbnailUrl ?? null,
+        difficulty: q.difficulty ?? null,
+        category: q.category ?? null,
+        pageviews: q.pageviews ?? null,
+        popularityLabel: q.popularityLabel ?? null,
+        popularityTier: q.popularityTier ?? null,
+        generatedAt: q.generatedAt ?? Date.now(),
+        normalizedQuestion: norm,
+      });
+
+      if (info.changes > 0) {
+        addedCount++;
+        existingList.push(q);
+      } else {
+        skippedCount++;
+      }
     }
+  });
 
-    if (!map.has(norm)) {
-      map.set(norm, q);
-      existingList.push(q);
-      addedCount++;
-    }
-  }
+  insertTransaction(newItems);
 
-  const combined = Array.from(map.values());
-  const dataDir = path.dirname(DATA_FILE);
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
+  const totalRow = db.prepare('SELECT COUNT(*) as count FROM generated_questions').get() as { count: number } | undefined;
+  const total = totalRow ? totalRow.count : currentBank.length + addedCount;
 
-  fs.writeFileSync(DATA_FILE, JSON.stringify(combined, null, 2), 'utf-8');
   console.log(
-    `💾 [Question Bank Storage] Appended ${addedCount} questions (skipped ${skippedCount} similar). Total bank: ${combined.length} (was ${previousCount})`
+    `💾 [Question Bank Storage] Appended ${addedCount} questions (skipped ${skippedCount} similar). Total bank: ${total}`
   );
 
-  return { added: addedCount, skipped: skippedCount, total: combined.length };
+  return { added: addedCount, skipped: skippedCount, total };
 }
 
 // Wikipedia article summary fetcher
