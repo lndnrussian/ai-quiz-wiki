@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { XMLParser } from 'fast-xml-parser';
 import { WikiQuestion } from '../src/types';
 
 export interface RawChgkQuestion {
@@ -86,10 +87,22 @@ export const CHGK_TOURNAMENTS: ChgkTournamentInfo[] = [
 // In-memory cache for parsed tournaments
 const tournamentCache = new Map<string, RawChgkQuestion[]>();
 
-// Helper to clean HTML text
-function cleanText(html: string): string {
-  if (!html) return '';
-  return html
+// Official User-Agent for external queries to db.chgk.info containing application name and contact
+const CHGK_USER_AGENT =
+  'WikiQuizApp/1.0 (https://ais-dev-pdh4u67tfy6jfhq5hmed5u-906541964448.asia-east1.run.app; contact: LndnRussian@gmail.com)';
+
+// XML parser instance keeping string values unparsed so question text/dates are preserved
+const xmlParser = new XMLParser({
+  trimValues: true,
+  parseTagValue: false,
+  ignoreAttributes: false,
+});
+
+// Helper to clean XML/HTML text and decode HTML entities
+function cleanText(val: any): string {
+  if (val == null) return '';
+  const text = typeof val === 'string' ? val : String(val);
+  return text
     .replace(/<[^>]+>/g, '')
     .replace(/&mdash;/g, '—')
     .replace(/&ndash;/g, '–')
@@ -103,60 +116,80 @@ function cleanText(html: string): string {
     .trim();
 }
 
-// Parse HTML page of a tour from db.chgk.info
-function parseQuestionsFromHtml(html: string, tourId: string, defaultTitle: string): RawChgkQuestion[] {
-  const titleMatch = html.match(/<title>([^<|]+)/);
-  const tournamentTitle = titleMatch ? cleanText(titleMatch[1]) : defaultTitle;
+interface ParsedTournamentXml {
+  tournamentTitle: string;
+  questions: RawChgkQuestion[];
+  childTourIds: string[];
+}
 
-  const qBlocks = html.split(/<div class="question"/g).slice(1);
-  const questions: RawChgkQuestion[] = [];
+// Parse official db.chgk.info tournament XML into RawChgkQuestion structure
+function parseQuestionsFromXml(
+  xml: string,
+  tourId: string,
+  defaultTitle: string,
+  mainTournamentTitle?: string
+): ParsedTournamentXml {
+  try {
+    const data = xmlParser.parse(xml);
+    const tourNode = data.tournament || data.tour || {};
+    const localTitle = cleanText(tourNode.Title);
+    const tournamentTitle = mainTournamentTitle || localTitle || defaultTitle;
 
-  for (const block of qBlocks) {
-    const endDiv = block.indexOf('</div></div>');
-    const content = endDiv !== -1 ? block.slice(0, endDiv + 12) : block;
+    const rawQuestions: any[] = tourNode.question
+      ? Array.isArray(tourNode.question)
+        ? tourNode.question
+        : [tourNode.question]
+      : [];
 
-    const qHeaderMatch = content.match(
-      /<strong class="Question">\s*<a href="([^"]+)">Вопрос\s*(\d+)<\/a>\s*:<\/strong>([\s\S]*?)(?:<div|<p\s*class|<p>\s*<strong class="Answer")/i
-    );
-    if (!qHeaderMatch) continue;
+    const questions: RawChgkQuestion[] = [];
 
-    const qUrl = 'https://db.chgk.info' + qHeaderMatch[1];
-    const qNum = parseInt(qHeaderMatch[2], 10);
-    const qText = cleanText(qHeaderMatch[3]);
+    for (const q of rawQuestions) {
+      const qText = cleanText(q.Question);
+      const aText = cleanText(q.Answer);
+      if (!qText || !aText) continue;
 
-    const ansMatch = content.match(/<strong class="Answer">Ответ:<\/strong>([\s\S]*?)<\/p>/i);
-    const answer = ansMatch ? cleanText(ansMatch[1]) : '';
-    if (!qText || !answer) continue;
+      const qNum = parseInt(String(q.Number || '1'), 10) || 1;
+      const parentTextId = cleanText(q.ParentTextId || q.parent_text_id || tourId);
+      const qUrl = parentTextId
+        ? `https://db.chgk.info/question/${parentTextId}/${qNum}`
+        : `https://db.chgk.info/question/${tourId}/${qNum}`;
 
-    const passMatch = content.match(/<strong class="PassCriteria">Зачёт:<\/strong>([\s\S]*?)<\/p>/i);
-    const passCriteria = passMatch ? cleanText(passMatch[1]) : undefined;
+      const passCriteria = cleanText(q.PassCriteria) || undefined;
+      const comments = cleanText(q.Comments) || undefined;
+      const sources = cleanText(q.Sources) || undefined;
+      const authors = cleanText(q.Authors) || undefined;
 
-    const comMatch = content.match(/<strong class="Comments">Комментарий:<\/strong>([\s\S]*?)<\/p>/i);
-    const comments = comMatch ? cleanText(comMatch[1]) : undefined;
+      questions.push({
+        id: `chgk_${tourId}_${qNum}`,
+        tournamentTitle,
+        tourId,
+        tournamentUrl: `https://db.chgk.info/tour/${tourId}`,
+        questionUrl: qUrl,
+        questionNumber: qNum,
+        question: qText,
+        answer: aText,
+        passCriteria,
+        comments,
+        sources,
+        authors,
+      });
+    }
 
-    const srcMatch = content.match(/<strong class="Sources">Источник\(и\):<\/strong>([\s\S]*?)<\/p>/i);
-    const sources = srcMatch ? cleanText(srcMatch[1]) : undefined;
+    const rawTours: any[] = tourNode.tour
+      ? Array.isArray(tourNode.tour)
+        ? tourNode.tour
+        : [tourNode.tour]
+      : [];
 
-    const authMatch = content.match(/<strong class="Authors">Автор:<\/strong>([\s\S]*?)<\/p>/i);
-    const authors = authMatch ? cleanText(authMatch[1]) : undefined;
+    const childTourIds: string[] = rawTours
+      .map((t: any) => cleanText(t.TextId))
+      .filter((tId: string) => Boolean(tId));
 
-    questions.push({
-      id: `chgk_${tourId}_${qNum}`,
-      tournamentTitle,
-      tourId,
-      tournamentUrl: `https://db.chgk.info/tour/${tourId}`,
-      questionUrl: qUrl,
-      questionNumber: qNum,
-      question: qText,
-      answer,
-      passCriteria,
-      comments,
-      sources,
-      authors,
-    });
+    return { tournamentTitle, questions, childTourIds };
+  } catch (err) {
+    console.warn(`[ChGK Service] Error parsing XML for ${tourId}:`, err);
+    return { tournamentTitle: defaultTitle, questions: [], childTourIds: [] };
   }
-
-  return questions;
 }
 
 // Load initial questions from data/chgk-catalog.json if available
@@ -179,7 +212,7 @@ export function initializeChgkCatalog() {
   }
 }
 
-// Fetch questions for a tournament (from cache or live db.chgk.info)
+// Fetch questions for a tournament (from cache or live db.chgk.info XML export)
 export async function getQuestionsForTournament(tourId: string): Promise<RawChgkQuestion[]> {
   if (tourId !== 'random' && tournamentCache.has(tourId) && (tournamentCache.get(tourId)?.length || 0) > 0) {
     return tournamentCache.get(tourId)!;
@@ -196,31 +229,72 @@ export async function getQuestionsForTournament(tourId: string): Promise<RawChgk
     }
   }
 
-  // Try fetching live from db.chgk.info
+  // Try fetching live from official db.chgk.info XML export
   const targetId = tourId === 'random' ? 'ovsch20.1_u' : tourId;
+  const tourMeta = CHGK_TOURNAMENTS.find((t) => t.id === targetId);
+  const defaultTitle = tourMeta?.title || targetId;
+
   try {
-    console.log(`[ChGK Service] Live fetching tournament from https://db.chgk.info/tour/${targetId}`);
-    const tourMeta = CHGK_TOURNAMENTS.find((t) => t.id === targetId);
-    const res = await fetch(`https://db.chgk.info/tour/${targetId}`, {
+    const xmlUrl = `https://db.chgk.info/tour/${targetId}/xml`;
+    console.log(`[ChGK Service] Live fetching tournament XML from ${xmlUrl}`);
+
+    const res = await fetch(xmlUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': CHGK_USER_AGENT,
+        'Accept': 'application/xml, text/xml, */*',
       },
     });
 
     if (res.ok) {
-      const html = await res.text();
-      const parsed = parseQuestionsFromHtml(html, targetId, tourMeta?.title || targetId);
-      if (parsed.length > 0) {
-        tournamentCache.set(targetId, parsed);
-        console.log(`[ChGK Service] Successfully cached ${parsed.length} questions for ${targetId}`);
-        return parsed;
+      const xml = await res.text();
+      const parsed = parseQuestionsFromXml(xml, targetId, defaultTitle);
+      let questions = parsed.questions;
+
+      // If top-level tournament has sub-tours and no direct questions, fetch child tours' XML
+      if (questions.length === 0 && parsed.childTourIds.length > 0) {
+        console.log(`[ChGK Service] Fetching ${parsed.childTourIds.length} sub-tours for ${targetId}...`);
+        const subTourResults = await Promise.allSettled(
+          parsed.childTourIds.map(async (childId) => {
+            const childRes = await fetch(`https://db.chgk.info/tour/${childId}/xml`, {
+              headers: {
+                'User-Agent': CHGK_USER_AGENT,
+                'Accept': 'application/xml, text/xml, */*',
+              },
+            });
+            if (!childRes.ok) return [];
+            const childXml = await childRes.text();
+            const childParsed = parseQuestionsFromXml(
+              childXml,
+              targetId,
+              parsed.tournamentTitle,
+              parsed.tournamentTitle
+            );
+            return childParsed.questions;
+          })
+        );
+
+        for (const r of subTourResults) {
+          if (r.status === 'fulfilled') {
+            questions.push(...r.value);
+          }
+        }
       }
+
+      if (questions.length > 0) {
+        // Sort questions by questionNumber
+        questions.sort((a, b) => a.questionNumber - b.questionNumber);
+        tournamentCache.set(targetId, questions);
+        console.log(`[ChGK Service] Successfully cached ${questions.length} questions from XML for ${targetId}`);
+        return questions;
+      }
+    } else {
+      console.warn(`[ChGK Service] HTTP ${res.status} when fetching XML for ${targetId}`);
     }
   } catch (err) {
-    console.warn(`[ChGK Service] Live fetch failed for ${targetId}:`, (err as Error).message);
+    console.warn(`[ChGK Service] Live XML fetch failed for ${targetId}:`, (err as Error).message);
   }
 
-  // Fallback to all cached questions
+  // Fallback to all cached questions across all tournaments in tournamentCache
   const fallbackList: RawChgkQuestion[] = [];
   for (const qs of tournamentCache.values()) {
     fallbackList.push(...qs);

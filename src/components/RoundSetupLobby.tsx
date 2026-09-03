@@ -33,6 +33,8 @@ import {
 import { sound } from '../utils/sound';
 import { loadCustomTopics, addCustomTopic, removeCustomTopic } from '../utils/storage';
 
+import { DEFAULT_WIKI_CATEGORIES, WikiCategoryItem } from '../constants/categories';
+
 interface RoundSetupLobbyProps {
   config: RoundCustomizationConfig;
   onChangeConfig: (config: RoundCustomizationConfig) => void;
@@ -41,11 +43,7 @@ interface RoundSetupLobbyProps {
   isLoading?: boolean;
 }
 
-interface CategoryItem {
-  id: string;
-  label: string;
-  description: string;
-}
+type CategoryItem = WikiCategoryItem;
 
 export const RoundSetupLobby: React.FC<RoundSetupLobbyProps> = ({
   config,
@@ -54,19 +52,44 @@ export const RoundSetupLobby: React.FC<RoundSetupLobbyProps> = ({
   activeProfile,
   isLoading = false,
 }) => {
-  const [categories, setCategories] = useState<CategoryItem[]>([]);
+  const [categories, setCategories] = useState<CategoryItem[]>(DEFAULT_WIKI_CATEGORIES);
   const [customTopics, setCustomTopics] = useState<string[]>([]);
   const [isCategoryDropdownOpen, setIsCategoryDropdownOpen] = useState(false);
   const [customTopicInput, setCustomTopicInput] = useState('');
   const [searchCatQuery, setSearchCatQuery] = useState('');
 
   useEffect(() => {
-    fetch('/api/wiki/categories')
-      .then((res) => res.json())
-      .then((data) => setCategories(data))
-      .catch((err) => console.error('Failed to load categories in lobby:', err));
+    let isMounted = true;
 
+    const fetchCategories = async (retries = 2) => {
+      try {
+        const res = await fetch('/api/wiki/categories');
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (isMounted && Array.isArray(data) && data.length > 0) {
+          setCategories(data);
+        }
+      } catch (err) {
+        if (retries > 0) {
+          setTimeout(() => {
+            if (isMounted) {
+              fetchCategories(retries - 1);
+            }
+          }, 1000);
+        } else {
+          console.warn('Wiki categories: utilizing curated default topics', err);
+        }
+      }
+    };
+
+    fetchCategories();
     setCustomTopics(loadCustomTopics());
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const updateConfig = (partial: Partial<RoundCustomizationConfig>) => {

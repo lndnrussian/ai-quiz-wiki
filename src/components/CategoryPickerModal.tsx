@@ -2,13 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { X, Search, Plus, Trash2, BookOpen, Sparkles, Check } from 'lucide-react';
 import { sound } from '../utils/sound';
 import { loadCustomTopics, addCustomTopic, removeCustomTopic } from '../utils/storage';
+import { DEFAULT_WIKI_CATEGORIES, WikiCategoryItem } from '../constants/categories';
 
-interface CategoryOption {
-  id: string;
-  label: string;
-  iconName: string;
-  description: string;
-}
+type CategoryOption = WikiCategoryItem;
 
 interface CategoryPickerModalProps {
   isOpen: boolean;
@@ -23,18 +19,45 @@ export const CategoryPickerModal: React.FC<CategoryPickerModalProps> = ({
   selectedCategory,
   onSelectCategory,
 }) => {
-  const [categories, setCategories] = useState<CategoryOption[]>([]);
+  const [categories, setCategories] = useState<CategoryOption[]>(DEFAULT_WIKI_CATEGORIES);
   const [customTopics, setCustomTopics] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [customTopic, setCustomTopic] = useState('');
 
   useEffect(() => {
-    fetch('/api/wiki/categories')
-      .then((res) => res.json())
-      .then((data) => setCategories(data))
-      .catch((err) => console.error('Failed to load categories:', err));
-    
-    setCustomTopics(loadCustomTopics());
+    let isMounted = true;
+
+    const fetchCategories = async (retries = 2) => {
+      try {
+        const res = await fetch('/api/wiki/categories');
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (isMounted && Array.isArray(data) && data.length > 0) {
+          setCategories(data);
+        }
+      } catch (err) {
+        if (retries > 0) {
+          setTimeout(() => {
+            if (isMounted) {
+              fetchCategories(retries - 1);
+            }
+          }, 1000);
+        } else {
+          console.warn('Wiki categories modal: utilizing curated default topics', err);
+        }
+      }
+    };
+
+    if (isOpen) {
+      fetchCategories();
+      setCustomTopics(loadCustomTopics());
+    }
+
+    return () => {
+      isMounted = false;
+    };
   }, [isOpen]);
 
   if (!isOpen) return null;

@@ -4,6 +4,7 @@ import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
+import { rateLimit } from 'express-rate-limit';
 import { comprehensiveFallbackQuestions } from './server/fallbackQuestions';
 import { WikiQuestion } from './src/types';
 import { questionGrowthJob } from './server/questionGrowthJob';
@@ -1042,12 +1043,61 @@ function getQuestionsFromBank(
 
 async function startServer() {
   const app = express();
+
+  // Trust proxy for Cloud Run reverse proxy layer to ensure accurate client IP detection
+  app.set('trust proxy', 1);
+
   app.use(express.json());
 
-  // Health check endpoint
+  // Health check endpoint (explicitly unmetered and served before rate limiters)
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: Date.now() });
   });
+
+  // Strict rate limiter for expensive AI endpoints: /api/quiz/generate and /api/quiz/evaluate-open
+  // Maximum 20 requests per IP per 5 minutes
+  const aiLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    statusCode: 429,
+    message: { error: 'Слишком много запросов, попробуйте позже' },
+    handler: (req, res) => {
+      res.status(429).json({ error: 'Слишком много запросов, попробуйте позже' });
+    },
+  });
+
+  // Softer rate limiter for other API routes: 60 requests per IP per 5 minutes
+  const generalApiLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    statusCode: 429,
+    message: { error: 'Слишком много запросов, попробуйте позже' },
+    handler: (req, res) => {
+      res.status(429).json({ error: 'Слишком много запросов, попробуйте позже' });
+    },
+    skip: (req) => {
+      const url = req.originalUrl || req.url || '';
+      return (
+        url.includes('/api/health') ||
+        url.includes('/api/wiki/categories') ||
+        url.includes('/api/chgk/tournaments') ||
+        url.includes('/api/quiz/quota-status') ||
+        url.includes('/api/quiz/generate') ||
+        url.includes('/api/quiz/evaluate-open')
+      );
+    },
+  });
+
+  // Apply strict rate limiter to AI generation & evaluation endpoints
+  app.use('/api/quiz/generate', aiLimiter);
+  app.use('/api/quiz/evaluate-open', aiLimiter);
+
+  // Apply softer rate limiter to all other /api routes
+  app.use('/api', generalApiLimiter);
 
   // Quota status endpoint (for UI / monitoring, resetting at midnight Pacific Time)
   app.get('/api/quiz/quota-status', (req, res) => {
@@ -1072,8 +1122,15 @@ async function startServer() {
     res.json(status);
   });
 
-  // Manual trigger endpoint for question growth batch
+  // Manual trigger endpoint for question growth batch (protected by ADMIN_SECRET_KEY)
   app.post('/api/bank/trigger-growth', async (req, res) => {
+    const adminKeyHeader = req.headers['x-admin-key'];
+    const configuredSecret = process.env.ADMIN_SECRET_KEY;
+
+    if (!configuredSecret || !adminKeyHeader || adminKeyHeader !== configuredSecret) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const requestedBatchSize = req.body.batchSize ? parseInt(req.body.batchSize, 10) : undefined;
     const requestedMaxCalls = req.body.maxCalls ? parseInt(req.body.maxCalls, 10) : undefined;
     
@@ -1095,6 +1152,7 @@ async function startServer() {
 
   // Wikipedia topics list
   app.get('/api/wiki/categories', (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
     const categories = [
       { id: 'all', label: 'Случайные темы', iconName: 'Sparkles', description: 'Вопросы по всей русскоязычной Википедии' },
       { id: 'Видеоигры', label: 'Видеоигры и гейминг', iconName: 'Gamepad2', description: 'Культовые франшизы, студии, персонажи и история гейминга' },
@@ -1114,6 +1172,7 @@ async function startServer() {
 
   // ChGK tournaments list & copyright info
   app.get('/api/chgk/tournaments', (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
     res.json({
       tournaments: CHGK_TOURNAMENTS,
       copyright: {
