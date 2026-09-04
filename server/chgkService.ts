@@ -160,8 +160,9 @@ function parseQuestionsFromXml(
       const sources = cleanText(q.Sources) || undefined;
       const authors = cleanText(q.Authors) || undefined;
 
+      const safeIdPart = (parentTextId || tourId).replace(/[^a-zA-Z0-9_]/g, '_');
       questions.push({
-        id: `chgk_${tourId}_${qNum}`,
+        id: `chgk_${safeIdPart}_${qNum}`,
         tournamentTitle,
         tourId,
         tournamentUrl: `https://db.chgk.info/tour/${tourId}`,
@@ -562,8 +563,36 @@ export async function getRandomChgkBatch(limit: number = 100): Promise<RawChgkQu
       console.log(`[ChGK Service] Successfully parsed, cached and persisted ${questions.length} questions from random batch`);
       return questions;
     } else {
-      console.log(`[ChGK Service] Random XML batch returned 0 questions from ${url}`);
-      return [];
+      console.log(`[ChGK Service] Random XML batch returned 0 questions from ${url}. Falling back to replenishing from tournament rotation pool...`);
+      const candidateTours = [
+        'ovsch21.1_u',
+        'km15_u',
+        'disharm1_u',
+        'pudali18_u',
+        'okmar22_u',
+        'unester09_u',
+        'vosh20.1_u',
+        'vosh21.1_u',
+        'chgkr21_u',
+        'letniy21_u',
+        'krem21_u',
+        'infobash21_u',
+      ];
+
+      const collected: RawChgkQuestion[] = [];
+      for (const tId of candidateTours) {
+        if (collected.length >= limit) break;
+        try {
+          const tQuestions = await getQuestionsForTournament(tId);
+          if (tQuestions && tQuestions.length > 0) {
+            collected.push(...tQuestions);
+            console.log(`[ChGK Service] Replenished ${tQuestions.length} questions from tour ${tId} (total collected: ${collected.length})`);
+          }
+        } catch (e: any) {
+          console.warn(`[ChGK Service] Failed fetching tour ${tId}:`, e?.message || e);
+        }
+      }
+      return collected.slice(0, limit);
     }
   } catch (err) {
     console.warn(`[ChGK Service] Error fetching random questions batch from ${url}:`, (err as Error).message);
