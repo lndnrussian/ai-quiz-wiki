@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ChgkMetadata } from '../types';
-import { Clock, ExternalLink, ShieldCheck, HelpCircle, X, Volume2, AlertCircle } from 'lucide-react';
+import { Clock, ExternalLink, ShieldCheck, HelpCircle, X, Volume2, AlertCircle, BookOpen, ArrowRight } from 'lucide-react';
 import { sound } from '../utils/sound';
 
 interface ChgkTopBarProps {
@@ -11,6 +11,10 @@ interface ChgkTopBarProps {
   totalSeconds?: number;
   isAnswered: boolean;
   onTimeUp?: () => void;
+  phase?: 'reading' | 'discussion' | 'ended';
+  readingSecondsLeft?: number;
+  onSkipReading?: () => void;
+  stickyTopOffset?: number;
 }
 
 export const ChgkTopBar: React.FC<ChgkTopBarProps> = ({
@@ -20,6 +24,11 @@ export const ChgkTopBar: React.FC<ChgkTopBarProps> = ({
   secondsLeft,
   totalSeconds = 60,
   isAnswered,
+  onTimeUp,
+  phase = 'discussion',
+  readingSecondsLeft = 10,
+  onSkipReading,
+  stickyTopOffset = 58,
 }) => {
   const [showCopyrightModal, setShowCopyrightModal] = useState(false);
 
@@ -27,16 +36,28 @@ export const ChgkTopBar: React.FC<ChgkTopBarProps> = ({
   const tournamentTitle = metadata?.tournamentTitle || 'База вопросов «Что? Где? Когда?»';
   const qNum = metadata?.questionNumber || questionNumber;
 
-  const percentLeft = Math.max(0, Math.min(100, (secondsLeft / totalSeconds) * 100));
-  const isUrgent = timerEnabled && !isAnswered && secondsLeft <= 10;
+  const isReading = timerEnabled && !isAnswered && phase === 'reading';
+  const percentLeft = isReading
+    ? Math.max(0, Math.min(100, (readingSecondsLeft / 10) * 100))
+    : Math.max(0, Math.min(100, (secondsLeft / totalSeconds) * 100));
+
+  const isUrgent = timerEnabled && !isAnswered && phase === 'discussion' && secondsLeft <= 10;
+
+  // Ensure onTimeUp is invoked when discussion seconds reach 0 while unanswered
+  React.useEffect(() => {
+    if (timerEnabled && !isAnswered && phase === 'discussion' && secondsLeft <= 0 && onTimeUp) {
+      onTimeUp();
+    }
+  }, [timerEnabled, isAnswered, phase, secondsLeft, onTimeUp]);
 
   return (
     <>
       <div
         id="chgk-top-navigation-bar"
-        className="w-full bg-[#1A1A1A] text-[#F9F7F2] border border-[#1A1A1A] mb-4 p-3 sm:p-4 select-none animate-fadeIn"
+        style={{ top: `${stickyTopOffset}px` }}
+        className="w-full bg-[#1A1A1A] text-[#F9F7F2] border-2 border-[#1A1A1A] mb-4 p-2.5 sm:p-3.5 select-none animate-fadeIn sticky z-30 shadow-[0_4px_16px_rgba(0,0,0,0.25)] transition-all"
       >
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 sm:gap-3">
           {/* Left: Tournament and Question Direct Link */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
             {/* Owl Icon & Base Tag */}
@@ -47,7 +68,7 @@ export const ChgkTopBar: React.FC<ChgkTopBarProps> = ({
 
             {/* Tournament Title & Question Number */}
             <div className="flex items-center gap-1.5 font-serif">
-              <span className="font-bold text-sm text-[#F9F7F2] truncate max-w-[200px] sm:max-w-[320px]" title={tournamentTitle}>
+              <span className="font-bold text-sm text-[#F9F7F2] truncate max-w-[180px] sm:max-w-[300px]" title={tournamentTitle}>
                 {tournamentTitle}
               </span>
               <span className="text-[#F9F7F2]/60">•</span>
@@ -66,36 +87,73 @@ export const ChgkTopBar: React.FC<ChgkTopBarProps> = ({
               className="inline-flex items-center gap-1 text-[11px] font-mono text-[#F9F7F2]/80 hover:text-[#F9F7F2] underline underline-offset-2 hover:bg-white/10 px-1.5 py-0.5 transition-colors"
               title="Открыть этот вопрос непосредственно в официальной Базе db.chgk.info"
             >
-              <span>Перейти к вопросу в базе</span>
+              <span>В базу</span>
               <ExternalLink className="w-3 h-3" />
             </a>
           </div>
 
           {/* Right: Clock Timer or Thoughtful Mode Badge & Copyright Button */}
-          <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+          <div className="flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-end">
             {timerEnabled ? (
               <div className="flex items-center gap-2">
-                {isUrgent && (
-                  <span className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 bg-red-950 border border-red-500/60 text-[10px] font-mono font-bold text-red-300 uppercase tracking-wider animate-pulse">
-                    <AlertCircle className="w-3 h-3 text-red-400" />
-                    <span>Осталось 10 сек</span>
-                  </span>
+                {isAnswered ? (
+                  secondsLeft <= 0 ? (
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 border border-red-500/50 bg-red-950/60 text-red-200 font-mono text-xs font-bold">
+                      <Clock className="w-3.5 h-3.5 text-red-400" />
+                      <span>Время вышло (00:00)</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 border border-white/20 bg-white/5 text-[#F9F7F2]/60 font-mono text-xs">
+                      <span>✓ Ответ дан (00:{String(secondsLeft).padStart(2, '0')})</span>
+                    </div>
+                  )
+                ) : isReading ? (
+                  /* Reading phase (10 seconds) */
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="flex items-center gap-1.5 px-2.5 py-1 border border-amber-400/80 bg-amber-950/80 text-amber-200 font-mono text-xs font-bold ring-1 ring-amber-400/40 animate-pulse"
+                      title="Время на чтение вопроса (10 секунд). После этого автоматически начнется 60 секунд обсуждения."
+                    >
+                      <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+                      <span>ЧТЕНИЕ: 00:{String(readingSecondsLeft).padStart(2, '0')}</span>
+                    </div>
+
+                    {onSkipReading && (
+                      <button
+                        onClick={() => {
+                          sound.playClick();
+                          onSkipReading();
+                        }}
+                        className="px-2 py-1 border border-amber-400/50 bg-amber-400/10 hover:bg-amber-400 hover:text-[#1A1A1A] text-amber-200 text-[11px] font-mono font-bold tracking-wide flex items-center gap-1 transition-colors"
+                        title="Пропустить оставшиеся секунды чтения и сразу начать 60-секундное обсуждение"
+                      >
+                        <span>К минуте</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  /* 60-second discussion phase */
+                  <div className="flex items-center gap-2">
+                    {isUrgent && (
+                      <span className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 bg-red-950 border border-red-500/60 text-[10px] font-mono font-bold text-red-300 uppercase tracking-wider animate-pulse">
+                        <AlertCircle className="w-3 h-3 text-red-400" />
+                        <span>Осталось 10 сек</span>
+                      </span>
+                    )}
+                    <div
+                      className={`flex items-center gap-1.5 px-2.5 py-1 border font-mono text-xs font-bold transition-all ${
+                        isUrgent
+                          ? 'border-red-400 bg-red-950 text-red-200 animate-pulse ring-1 ring-red-400/50'
+                          : 'border-white/30 bg-white/10 text-[#F9F7F2]'
+                      }`}
+                      title="Классическая минута обсуждения (60 секунд): сигнал за 10 секунд и финальный гонг"
+                    >
+                      <Clock className={`w-3.5 h-3.5 ${isUrgent ? 'text-red-400' : ''}`} />
+                      <span>00:{String(secondsLeft).padStart(2, '0')}</span>
+                    </div>
+                  </div>
                 )}
-                <div
-                  className={`flex items-center gap-1.5 px-2.5 py-1 border font-mono text-xs font-bold transition-all ${
-                    isUrgent
-                      ? 'border-red-400 bg-red-950 text-red-200 animate-pulse ring-1 ring-red-400/50'
-                      : isAnswered
-                      ? 'border-white/20 bg-white/5 text-[#F9F7F2]/60'
-                      : 'border-white/30 bg-white/10 text-[#F9F7F2]'
-                  }`}
-                  title="Классическая минута обсуждения (60 секунд): сигнал за 10 секунд и финальный гонг"
-                >
-                  <Clock className={`w-3.5 h-3.5 ${isUrgent ? 'text-red-400' : ''}`} />
-                  <span>
-                    {isAnswered ? 'Время зафиксировано' : `00:${String(secondsLeft).padStart(2, '0')}`}
-                  </span>
-                </div>
               </div>
             ) : (
               <div
@@ -122,12 +180,16 @@ export const ChgkTopBar: React.FC<ChgkTopBarProps> = ({
           </div>
         </div>
 
-        {/* 60s Progress Bar (when timer is enabled) */}
+        {/* Progress Bar (reading phase: amber / discussion phase: standard/red) */}
         {timerEnabled && !isAnswered && (
           <div className="w-full bg-white/10 h-1 mt-2.5 overflow-hidden">
             <div
               className={`h-full transition-all duration-1000 ease-linear ${
-                isUrgent ? 'bg-red-400' : 'bg-[#F9F7F2]'
+                isReading
+                  ? 'bg-amber-400'
+                  : isUrgent
+                  ? 'bg-red-400'
+                  : 'bg-[#F9F7F2]'
               }`}
               style={{ width: `${percentLeft}%` }}
             />

@@ -119,6 +119,10 @@ export default function App() {
   const [isEvaluatingOpen, setIsEvaluatingOpen] = useState<boolean>(false);
   const [openEvaluationResult, setOpenEvaluationResult] = useState<{ isCorrect: boolean; feedback: string; similarity: number } | null>(null);
   const questionStartTimeRef = useRef<number>(Date.now());
+  const isAnsweredRef = useRef<boolean>(false);
+  isAnsweredRef.current = isAnswered;
+  const currentQuestionRef = useRef<WikiQuestion | null>(null);
+  currentQuestionRef.current = currentQuestion;
 
   // Background prefetching guards
   const isPrefetchingRef = useRef<boolean>(false);
@@ -140,8 +144,24 @@ export default function App() {
   const [blitzSecondsLeft, setBlitzSecondsLeft] = useState<number>(blitzDurationSeconds);
   const [isBlitzActive, setIsBlitzActive] = useState<boolean>(false);
 
-  // ChGK 60-second Timer State
+  // ChGK Timer State (10s reading phase + 60s discussion phase)
+  const [chgkPhase, setChgkPhase] = useState<'reading' | 'discussion' | 'ended'>('reading');
+  const [chgkReadingSecondsLeft, setChgkReadingSecondsLeft] = useState<number>(10);
   const [chgkSecondsLeft, setChgkSecondsLeft] = useState<number>(60);
+  const [headerHeight, setHeaderHeight] = useState<number>(58);
+
+  // Measure main-header height for accurate sticky docking under header
+  useEffect(() => {
+    const updateHeaderHeight = () => {
+      const headerEl = document.getElementById('main-header');
+      if (headerEl) {
+        setHeaderHeight(headerEl.offsetHeight);
+      }
+    };
+    updateHeaderHeight();
+    window.addEventListener('resize', updateHeaderHeight);
+    return () => window.removeEventListener('resize', updateHeaderHeight);
+  }, []);
 
   // Survival Mode State
   const [survivalLives, setSurvivalLives] = useState<number>(3);
@@ -202,6 +222,8 @@ export default function App() {
     setSelectedOption(null);
     setIsEvaluatingOpen(false);
     setOpenEvaluationResult(null);
+    setChgkPhase('reading');
+    setChgkReadingSecondsLeft(10);
     setChgkSecondsLeft(60);
     questionStartTimeRef.current = Date.now();
   }, []);
@@ -381,7 +403,7 @@ export default function App() {
     };
   }, [gameState, gameMode, isBlitzActive, blitzSecondsLeft]);
 
-  // ChGK 60-Second Countdown Timer (when timer is enabled)
+  // ChGK 10-Second Reading Phase Countdown
   useEffect(() => {
     let timer: NodeJS.Timeout | null = null;
     const isChgk = roundConfig.engineSource === 'chgk';
@@ -392,13 +414,53 @@ export default function App() {
       isChgk &&
       timerEnabled &&
       !isAnswered &&
+      chgkPhase === 'reading' &&
+      chgkReadingSecondsLeft > 0
+    ) {
+      timer = setInterval(() => {
+        setChgkReadingSecondsLeft((prev) => {
+          if (prev <= 1) {
+            // Reading time completed -> start 60s discussion with audio chime
+            sound.playStartMinute();
+            setChgkPhase('discussion');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [
+    gameState,
+    roundConfig.engineSource,
+    roundConfig.chgkTimerEnabled,
+    isAnswered,
+    chgkPhase,
+    chgkReadingSecondsLeft,
+  ]);
+
+  // ChGK 60-Second Countdown Timer (when in discussion phase and timer is enabled)
+  useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
+    const isChgk = roundConfig.engineSource === 'chgk';
+    const timerEnabled = roundConfig.chgkTimerEnabled ?? true;
+
+    if (
+      gameState === 'playing' &&
+      isChgk &&
+      timerEnabled &&
+      !isAnswered &&
+      chgkPhase === 'discussion' &&
       chgkSecondsLeft > 0
     ) {
       timer = setInterval(() => {
         setChgkSecondsLeft((prev) => {
           if (prev <= 1) {
-            // Final second expires -> majestic tournament gong ("Время!")
-            sound.playGong();
+            // Final second expires -> trigger timeout & show author answer immediately!
+            triggerChgkTimeoutRef.current();
             return 0;
           }
           if (prev === 11) {
@@ -423,10 +485,11 @@ export default function App() {
     roundConfig.engineSource,
     roundConfig.chgkTimerEnabled,
     isAnswered,
+    chgkPhase,
     chgkSecondsLeft,
   ]);
 
-  // Handle ChGK timeout when 60s expires
+  // Safeguard: Handle ChGK timeout if 60s reaches 0 while question is unanswered
   useEffect(() => {
     const isChgk = roundConfig.engineSource === 'chgk';
     const timerEnabled = roundConfig.chgkTimerEnabled ?? true;
@@ -435,26 +498,18 @@ export default function App() {
       isChgk &&
       timerEnabled &&
       chgkSecondsLeft === 0 &&
+      chgkPhase !== 'reading' &&
       !isAnswered &&
       currentQuestion
     ) {
-      processAnswerOutcome(
-        false,
-        'Время вышло (60с)',
-        `Время обсуждения вышло! Авторский ответ: ${currentQuestion.correctAnswer}`
-      );
-      setOpenEvaluationResult({
-        isCorrect: false,
-        feedback: `Время обсуждения вышло (60 секунд). Авторский ответ: ${currentQuestion.correctAnswer}`,
-        similarity: 0,
-      });
-      setIsAnswered(true);
+      triggerChgkTimeoutRef.current();
     }
   }, [
-    chgkSecondsLeft,
     gameState,
     roundConfig.engineSource,
     roundConfig.chgkTimerEnabled,
+    chgkSecondsLeft,
+    chgkPhase,
     isAnswered,
     currentQuestion,
   ]);
@@ -706,6 +761,7 @@ export default function App() {
   ) => {
     if (!currentQuestion) return;
 
+    setChgkPhase('ended');
     const timeSpent = Math.round((Date.now() - questionStartTimeRef.current) / 1000);
     const prevRank = calculateUserRank(activeProfile.stats.xp);
 
@@ -784,6 +840,35 @@ export default function App() {
       }
     }
   };
+
+  // Trigger ChGK Timeout when 60s expires (reveals canonical answer, comments, and enables next question)
+  const triggerChgkTimeout = useCallback(() => {
+    if (isAnsweredRef.current || !currentQuestionRef.current) return;
+
+    sound.playGong();
+    setChgkPhase('ended');
+    setChgkSecondsLeft(0);
+    setIsAnswered(true);
+
+    const question = currentQuestionRef.current;
+    const typedInput = (document.getElementById('open-answer-input') as HTMLInputElement)?.value?.trim();
+    const recordedAnswer = typedInput || '— Время вышло —';
+
+    processAnswerOutcome(
+      false,
+      recordedAnswer,
+      `Время обсуждения (60 секунд) истекло. Авторский ответ: ${question.correctAnswer}`
+    );
+
+    setOpenEvaluationResult({
+      isCorrect: false,
+      feedback: `Время обсуждения вышло (60 секунд). Авторский ответ: ${question.correctAnswer}`,
+      similarity: 0,
+    });
+  }, [processAnswerOutcome]);
+
+  const triggerChgkTimeoutRef = useRef(triggerChgkTimeout);
+  triggerChgkTimeoutRef.current = triggerChgkTimeout;
 
   // Handle Multiple Choice Option Selection
   const handleSelectOption = (option: string) => {
@@ -1011,24 +1096,20 @@ export default function App() {
                 metadata={currentQuestion.chgkMetadata}
                 questionNumber={questionNumber}
                 timerEnabled={roundConfig.chgkTimerEnabled ?? true}
+                phase={chgkPhase}
+                readingSecondsLeft={chgkReadingSecondsLeft}
                 secondsLeft={chgkSecondsLeft}
                 totalSeconds={60}
                 isAnswered={isAnswered}
-                onTimeUp={() => {
-                  if (!isAnswered && currentQuestion) {
-                    processAnswerOutcome(
-                      false,
-                      'Время вышло (60с)',
-                      `Время обсуждения вышло! Авторский ответ: ${currentQuestion.correctAnswer}`
-                    );
-                    setOpenEvaluationResult({
-                      isCorrect: false,
-                      feedback: `Время вышло (60 секунд). Авторский ответ: ${currentQuestion.correctAnswer}`,
-                      similarity: 0,
-                    });
-                    setIsAnswered(true);
+                stickyTopOffset={headerHeight}
+                onSkipReading={() => {
+                  if (chgkPhase === 'reading' && !isAnswered) {
+                    sound.playClick();
+                    sound.playStartMinute();
+                    setChgkPhase('discussion');
                   }
                 }}
+                onTimeUp={triggerChgkTimeout}
               />
             )}
 

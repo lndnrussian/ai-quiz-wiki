@@ -143,7 +143,11 @@ export const OpenAnswerInput: React.FC<OpenAnswerInputProps> = ({
                 </div>
                 <div>
                   <h4 className="font-bold text-sm uppercase tracking-wider text-[#1A1A1A]">
-                    {evaluationResult?.isCorrect ? 'Ответ принят' : 'Неточный ответ'}
+                    {evaluationResult?.isCorrect
+                      ? 'Ответ принят'
+                      : evaluationResult?.feedback?.toLowerCase().includes('время')
+                      ? 'Время вышло'
+                      : 'Неточный ответ'}
                   </h4>
                   <p className="text-xs text-[#1A1A1A]/80 mt-0.5">
                     {evaluationResult?.feedback || (evaluationResult?.isCorrect ? 'Правильный ответ.' : 'Ознакомьтесь с фактом ниже.')}

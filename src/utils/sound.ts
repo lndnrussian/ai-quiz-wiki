@@ -272,6 +272,42 @@ class SoundEngine {
   }
 
   /**
+   * Sound played when the 60-second discussion minute starts ("Время пошло!").
+   * Melodic ascending triad chime.
+   */
+  public playStartMinute() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const notes = [
+      { freq: 523.25, time: now, duration: 0.12 },        // C5
+      { freq: 659.25, time: now + 0.09, duration: 0.14 },  // E5
+      { freq: 783.99, time: now + 0.18, duration: 0.28 },  // G5
+    ];
+
+    notes.forEach(({ freq, time, duration }) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, time);
+
+      gain.gain.setValueAtTime(0, time);
+      gain.gain.linearRampToValueAtTime(0.18, time + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start(time);
+      osc.stop(time + duration + 0.05);
+    });
+  }
+
+  /**
    * Sound played at exactly 10 seconds remaining (the famous 50th second warning).
    * Generates a distinct double-beep alert tone.
    */
