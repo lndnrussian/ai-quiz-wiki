@@ -41,6 +41,13 @@ import {
 import { sound } from './utils/sound';
 import { Loader2, AlertCircle, RefreshCw, Sliders } from 'lucide-react';
 
+function normalizeQuestionText(text: string): string {
+  return (text || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"'.,!?:;()[\]{}\-\/\\—–\s]/g, '');
+}
+
 export default function App() {
   // Persistence & User Profiles State
   const [activeProfile, setActiveProfile] = useState<UserProfile>(getActiveProfile);
@@ -95,6 +102,14 @@ export default function App() {
     const fromQueue = questionQueue.map((q) => q.id);
     const fromCurrent = currentQuestion ? [currentQuestion.id] : [];
     const fromHistory = (activeProfile.stats.history || []).map((h) => h.question?.id);
+    return Array.from(new Set([...fromQueue, ...fromCurrent, ...fromHistory])).filter(Boolean);
+  }, [questionQueue, currentQuestion, activeProfile.stats.history]);
+
+  // Helper to get comprehensive list of all excluded question texts
+  const getAllExcludedQuestionTexts = useCallback(() => {
+    const fromQueue = questionQueue.map((q) => q.question);
+    const fromCurrent = currentQuestion ? [currentQuestion.question] : [];
+    const fromHistory = (activeProfile.stats.history || []).map((h) => h.question?.question);
     return Array.from(new Set([...fromQueue, ...fromCurrent, ...fromHistory])).filter(Boolean);
   }, [questionQueue, currentQuestion, activeProfile.stats.history]);
 
@@ -162,7 +177,7 @@ export default function App() {
             format: fmt === 'all' ? 'random' : fmt,
             category: cat,
             count,
-            excludeTitles: exclude,
+            excludeTitles: engine === 'chgk' ? [] : exclude,
             excludeIds: getAllExcludedIds(),
             engineSource: engine,
             chgkTournamentId: tournamentId,
@@ -216,32 +231,33 @@ export default function App() {
 
     const currentExcludes = getAllExcludedTitles();
     const currentExcludeIds = new Set(getAllExcludedIds());
+    const seenQuestionTexts = new Set(getAllExcludedQuestionTexts().map(normalizeQuestionText));
     const questions = await fetchQuestions(difficulty, formatFilter, selectedCategory, 3, currentExcludes);
 
     if (questions.length > 0) {
-      const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
-      const seenQuestions = new Set<string>();
+      const seenBatchQuestions = new Set<string>();
       const uniqueBatch: WikiQuestion[] = [];
 
       for (const q of questions) {
-        const normT = (q.articleTitle || '').toLowerCase().trim();
-        const normQ = (q.question || '').toLowerCase().trim();
+        const normQ = normalizeQuestionText(q.question);
         if (
-          !seenTitles.has(normT) &&
-          !seenQuestions.has(normQ) &&
+          !seenQuestionTexts.has(normQ) &&
+          !seenBatchQuestions.has(normQ) &&
           !currentExcludeIds.has(q.id)
         ) {
-          if (normT) seenTitles.add(normT);
-          if (normQ) seenQuestions.add(normQ);
+          if (normQ) seenBatchQuestions.add(normQ);
           uniqueBatch.push(q);
         }
       }
 
-      if (uniqueBatch.length > 0) {
-        const [first, ...rest] = uniqueBatch;
+      // Safety fallback: if all were seen in history, take available questions
+      const usableQuestions = uniqueBatch.length > 0 ? uniqueBatch : questions;
+
+      if (usableQuestions.length > 0) {
+        const [first, ...rest] = usableQuestions;
         setCurrentQuestion(first);
         setQuestionQueue(rest);
-        const allFetchedTitles = uniqueBatch.map((q) => q.articleTitle).filter(Boolean);
+        const allFetchedTitles = usableQuestions.map((q) => q.articleTitle).filter(Boolean);
         setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...allFetchedTitles])));
         
         const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(allFetchedTitles);
@@ -250,6 +266,7 @@ export default function App() {
 
         if (first.category) setRecentCategories((prev) => [...prev.slice(-5), first.category]);
         questionStartTimeRef.current = Date.now();
+        setNetworkError(null);
       } else {
         setNetworkError('Не удалось подобрать новые уникальные вопросы по выбранным параметрам. Попробуйте сменить категорию или сложность.');
       }
@@ -276,24 +293,22 @@ export default function App() {
     isPrefetchingRef.current = true;
     const currentExcludes = getAllExcludedTitles();
     const currentExcludeIds = new Set(getAllExcludedIds());
+    const seenQuestionTexts = new Set(getAllExcludedQuestionTexts().map(normalizeQuestionText));
 
     fetchQuestions(difficulty, formatFilter, selectedCategory, 2, currentExcludes)
       .then((newItems) => {
         if (newItems.length > 0) {
-          const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
-          const seenQuestions = new Set<string>();
+          const seenBatch = new Set<string>();
 
           const uniqueNew = newItems.filter((q) => {
-            const normT = (q.articleTitle || '').toLowerCase().trim();
-            const normQ = (q.question || '').toLowerCase().trim();
+            const normQ = normalizeQuestionText(q.question);
             const isExcluded =
-              seenTitles.has(normT) ||
-              seenQuestions.has(normQ) ||
+              seenQuestionTexts.has(normQ) ||
+              seenBatch.has(normQ) ||
               currentExcludeIds.has(q.id);
 
             if (!isExcluded) {
-              if (normT) seenTitles.add(normT);
-              if (normQ) seenQuestions.add(normQ);
+              if (normQ) seenBatch.add(normQ);
               return true;
             }
             return false;
@@ -302,14 +317,12 @@ export default function App() {
           if (uniqueNew.length > 0) {
             setQuestionQueue((prev) => {
               const existingIds = new Set(prev.map((p) => p.id));
-              const existingTitles = new Set(prev.map((p) => (p.articleTitle || '').toLowerCase().trim()));
-              const existingQuestions = new Set(prev.map((p) => (p.question || '').toLowerCase().trim()));
+              const existingQuestions = new Set(prev.map((p) => normalizeQuestionText(p.question)));
 
               const filtered = uniqueNew.filter(
                 (u) =>
                   !existingIds.has(u.id) &&
-                  !existingTitles.has((u.articleTitle || '').toLowerCase().trim()) &&
-                  !existingQuestions.has((u.question || '').toLowerCase().trim())
+                  !existingQuestions.has(normalizeQuestionText(u.question))
               );
               return [...prev, ...filtered];
             });
@@ -482,31 +495,28 @@ export default function App() {
         resetAnswerState();
         const currentExcludes = getAllExcludedTitles();
         const currentExcludeIds = new Set(getAllExcludedIds());
+        const seenQuestionTexts = new Set(getAllExcludedQuestionTexts().map(normalizeQuestionText));
         const newItems = await fetchQuestions(difficulty, newFmt, selectedCategory, 2, currentExcludes);
 
-        const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
         const uniqueItems = newItems.filter(
           (q) =>
-            !seenTitles.has((q.articleTitle || '').toLowerCase().trim()) &&
+            !seenQuestionTexts.has(normalizeQuestionText(q.question)) &&
             !currentExcludeIds.has(q.id)
         );
 
-        if (uniqueItems.length > 0) {
-          const [nextQ, ...rest] = uniqueItems;
+        const usableItems = uniqueItems.length > 0 ? uniqueItems : newItems;
+
+        if (usableItems.length > 0) {
+          const [nextQ, ...rest] = usableItems;
           setCurrentQuestion(nextQ);
           setQuestionQueue(rest);
-          const newTitles = uniqueItems.map((q) => q.articleTitle).filter(Boolean);
+          const newTitles = usableItems.map((q) => q.articleTitle).filter(Boolean);
           setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
           const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
           setActiveProfile(updatedP);
           setAllProfiles(updatedAll);
           if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
           setNetworkError(null);
-        } else if (newItems.length > 0) {
-          // Fallback to first if all were seen
-          const [nextQ, ...rest] = newItems;
-          setCurrentQuestion(nextQ);
-          setQuestionQueue(rest);
         }
         setIsLoadingInitial(false);
       }
@@ -528,30 +538,28 @@ export default function App() {
       resetAnswerState();
       const currentExcludes = getAllExcludedTitles();
       const currentExcludeIds = new Set(getAllExcludedIds());
+      const seenQuestionTexts = new Set(getAllExcludedQuestionTexts().map(normalizeQuestionText));
       const newItems = await fetchQuestions(difficulty, formatFilter, cat, 2, currentExcludes);
 
-      const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
       const uniqueItems = newItems.filter(
         (q) =>
-          !seenTitles.has((q.articleTitle || '').toLowerCase().trim()) &&
+          !seenQuestionTexts.has(normalizeQuestionText(q.question)) &&
           !currentExcludeIds.has(q.id)
       );
 
-      if (uniqueItems.length > 0) {
-        const [nextQ, ...rest] = uniqueItems;
+      const usableItems = uniqueItems.length > 0 ? uniqueItems : newItems;
+
+      if (usableItems.length > 0) {
+        const [nextQ, ...rest] = usableItems;
         setCurrentQuestion(nextQ);
         setQuestionQueue(rest);
-        const newTitles = uniqueItems.map((q) => q.articleTitle).filter(Boolean);
+        const newTitles = usableItems.map((q) => q.articleTitle).filter(Boolean);
         setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
         const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
         setActiveProfile(updatedP);
         setAllProfiles(updatedAll);
         if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
         setNetworkError(null);
-      } else if (newItems.length > 0) {
-        const [nextQ, ...rest] = newItems;
-        setCurrentQuestion(nextQ);
-        setQuestionQueue(rest);
       }
       setIsLoadingInitial(false);
     }
@@ -583,36 +591,39 @@ export default function App() {
       try {
         const currentExcludes = getAllExcludedTitles();
         const currentExcludeIds = new Set(getAllExcludedIds());
+        const seenQuestionTexts = new Set(getAllExcludedQuestionTexts().map(normalizeQuestionText));
         const newItems = await fetchQuestions(difficulty, formatFilter, selectedCategory, 2, currentExcludes);
 
         if (newItems.length > 0) {
-          const seenTitles = new Set(currentExcludes.map((t) => t.toLowerCase().trim()));
-          const seenQuestions = new Set<string>();
+          const seenBatch = new Set<string>();
 
           const uniqueNew = newItems.filter((q) => {
-            const normT = (q.articleTitle || '').toLowerCase().trim();
-            const normQ = (q.question || '').toLowerCase().trim();
+            const normQ = normalizeQuestionText(q.question);
             const isExcluded =
-              seenTitles.has(normT) ||
-              seenQuestions.has(normQ) ||
+              seenQuestionTexts.has(normQ) ||
+              seenBatch.has(normQ) ||
               currentExcludeIds.has(q.id);
 
             if (!isExcluded) {
-              if (normT) seenTitles.add(normT);
-              if (normQ) seenQuestions.add(normQ);
+              if (normQ) seenBatch.add(normQ);
               return true;
             }
             return false;
           });
 
-          if (uniqueNew.length > 0) {
+          const candidates = uniqueNew.length > 0
+            ? uniqueNew
+            : newItems.filter((q) => q.id !== currentQuestion?.id && normalizeQuestionText(q.question) !== normalizeQuestionText(currentQuestion?.question || ''));
+          const finalItems = candidates.length > 0 ? candidates : newItems;
+
+          if (finalItems.length > 0) {
             resetAnswerState();
             setQuestionNumber((prev) => prev + 1);
 
-            const [nextQ, ...rest] = uniqueNew;
+            const [nextQ, ...rest] = finalItems;
             setCurrentQuestion(nextQ);
             setQuestionQueue(rest);
-            const newTitles = uniqueNew.map((q) => q.articleTitle).filter(Boolean);
+            const newTitles = finalItems.map((q) => q.articleTitle).filter(Boolean);
             setUsedArticleTitles((prev) => Array.from(new Set([...prev, ...newTitles])));
             const { profile: updatedP, allProfiles: updatedAll } = addSeenArticleTitles(newTitles);
             setActiveProfile(updatedP);

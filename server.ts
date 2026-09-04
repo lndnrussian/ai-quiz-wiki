@@ -200,24 +200,21 @@ async function generateWithGeminiRetry(
   schemaConfig?: unknown
 ): Promise<string | null> {
   for (const modelName of GEMINI_MODELS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
     try {
-      const callPromise = ai.models.generateContent({
+      const response = await ai.models.generateContent({
         model: modelName,
         contents: prompt,
-        config: schemaConfig as never,
+        config: { ...(schemaConfig as object), abortSignal: controller.signal } as never,
       });
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Model call timeout')), 12000)
-      );
-
-      const response = await Promise.race([callPromise, timeoutPromise]);
+      clearTimeout(timeoutId);
       const text = response.text?.trim();
       if (text) {
         return text;
       }
     } catch {
-      // Seamlessly proceed to next model in list
+      clearTimeout(timeoutId);
       continue;
     }
   }
@@ -1427,8 +1424,7 @@ async function startServer() {
     // Handle ChGK questions mode directly
     if (engineSource === 'chgk') {
       try {
-        const combinedExcludes = [...(excludeIds || []), ...(excludeTitles || [])];
-        const questions = await getChgkQuestions(chgkTournamentId, count, combinedExcludes);
+        const questions = await getChgkQuestions(chgkTournamentId, count, excludeIds || []);
         return res.json({
           questions,
           source: 'db.chgk.info',
