@@ -4,6 +4,7 @@ import cron, { ScheduledTask } from 'node-cron';
 import { GoogleGenAI, Type } from '@google/genai';
 import db from './db';
 import { WikiQuestion, DifficultyLevel } from '../src/types';
+import { getRandomChgkBatch } from './chgkService';
 
 const DATA_FILE = path.join(process.cwd(), 'data', 'generated-questions.json');
 const GEMINI_MODEL = 'gemini-2.5-flash-lite';
@@ -18,6 +19,7 @@ export interface GrowthJobStatus {
   lastRunGeneratedCount: number;
   lastRunSkippedCount: number;
   lastRunCallsUsed: number;
+  lastRunChgkCount?: number;
   totalBankCount: number;
   lastError: string | null;
 }
@@ -477,6 +479,7 @@ class QuestionGrowthJobManager {
   private lastRunGeneratedCount: number = 0;
   private lastRunSkippedCount: number = 0;
   private lastRunCallsUsed: number = 0;
+  private lastRunChgkCount: number = 0;
   private lastError: string | null = null;
   private cronTask: ScheduledTask | null = null;
   private onBankUpdated?: () => void;
@@ -521,6 +524,7 @@ class QuestionGrowthJobManager {
       lastRunGeneratedCount: this.lastRunGeneratedCount,
       lastRunSkippedCount: this.lastRunSkippedCount,
       lastRunCallsUsed: this.lastRunCallsUsed,
+      lastRunChgkCount: this.lastRunChgkCount,
       totalBankCount: currentBank.length,
       lastError: this.lastError,
     };
@@ -530,12 +534,13 @@ class QuestionGrowthJobManager {
     generated: number;
     skipped: number;
     callsUsed: number;
+    chgkCount?: number;
     totalBank: number;
   }> {
     if (this.isRunning) {
       console.warn('⚠️ [Question Growth Job] Job is already running. Skipping concurrent execution.');
       const current = readExistingBank();
-      return { generated: 0, skipped: 0, callsUsed: 0, totalBank: current.length };
+      return { generated: 0, skipped: 0, callsUsed: 0, chgkCount: 0, totalBank: current.length };
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
@@ -543,7 +548,7 @@ class QuestionGrowthJobManager {
       console.warn('⚠️ [Question Growth Job] GEMINI_API_KEY is not set. Cannot run scheduled generation.');
       this.lastError = 'GEMINI_API_KEY is missing';
       const current = readExistingBank();
-      return { generated: 0, skipped: 0, callsUsed: 0, totalBank: current.length };
+      return { generated: 0, skipped: 0, callsUsed: 0, chgkCount: 0, totalBank: current.length };
     }
 
     const batchSize = targetBatchSize || parseInt(process.env.QUESTION_BANK_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10);
@@ -554,8 +559,19 @@ class QuestionGrowthJobManager {
     let scheduledAiCallsCount = 0; // Dedicated run accounting - separate from visitor live quota
     let totalGeneratedInRun = 0;
     let totalSkippedInRun = 0;
+    let chgkCountInRun = 0;
 
     console.log(`🚀 [Question Growth Job] Starting background run (target: ${batchSize} questions, safety cap: ${maxCalls} AI calls)...`);
+
+    // Independent step: replenish ChGK questions batch from db.chgk.info
+    try {
+      console.log('📚 [Question Growth Job] Step 1: Replenishing ChGK questions batch via getRandomChgkBatch(100)...');
+      const chgkQuestions = await getRandomChgkBatch(100);
+      chgkCountInRun = Array.isArray(chgkQuestions) ? chgkQuestions.length : 0;
+      console.log(`✅ [Question Growth Job] ChGK replenishment completed: received and cached ${chgkCountInRun} questions.`);
+    } catch (chgkErr: any) {
+      console.warn('⚠️ [Question Growth Job] Error during ChGK questions replenishment (continuing with Wikipedia generation):', chgkErr?.message || chgkErr);
+    }
 
     try {
       const ai = new GoogleGenAI({
@@ -698,10 +714,12 @@ ${article.extract}
       this.lastRunGeneratedCount = totalGeneratedInRun;
       this.lastRunSkippedCount = totalSkippedInRun;
       this.lastRunCallsUsed = scheduledAiCallsCount;
+      this.lastRunChgkCount = chgkCountInRun;
 
       console.log(`\n🎉 [Question Growth Job] RUN COMPLETED:`);
-      console.log(`   - Generated & Appended: ${totalGeneratedInRun} new questions`);
-      console.log(`   - Skipped Similar/Duplicate: ${totalSkippedInRun} questions`);
+      console.log(`   - Generated & Appended (Wikipedia): ${totalGeneratedInRun} new questions`);
+      console.log(`   - Skipped Similar/Duplicate (Wikipedia): ${totalSkippedInRun} questions`);
+      console.log(`   - ChGK Questions Added/Cached: ${chgkCountInRun} questions`);
       console.log(`   - AI Calls Used: ${scheduledAiCallsCount} (dedicated run budget)`);
       console.log(`   - Current Total in Bank: ${finalBank.length} questions in ${DATA_FILE}`);
 
@@ -709,6 +727,7 @@ ${article.extract}
         generated: totalGeneratedInRun,
         skipped: totalSkippedInRun,
         callsUsed: scheduledAiCallsCount,
+        chgkCount: chgkCountInRun,
         totalBank: finalBank.length,
       };
     } catch (error: any) {
@@ -719,6 +738,7 @@ ${article.extract}
         generated: totalGeneratedInRun,
         skipped: totalSkippedInRun,
         callsUsed: scheduledAiCallsCount,
+        chgkCount: chgkCountInRun,
         totalBank: finalBank.length,
       };
     } finally {
