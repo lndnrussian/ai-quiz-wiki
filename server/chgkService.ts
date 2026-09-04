@@ -209,6 +209,39 @@ export function initializeChgkCatalog() {
   }
 }
 
+// Helper to fetch with exponential backoff retry on network errors or 429/503 status
+async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries: number = 3): Promise<Response> {
+  const delays = [500, 1500, 3000];
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 || res.status === 503) {
+        if (attempt < maxRetries) {
+          const delay = delays[attempt] ?? 3000;
+          console.warn(`[ChGK Service] Received HTTP ${res.status} from ${url}. Retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        throw new Error(`HTTP ${res.status} when fetching ${url}`);
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        const delay = delays[attempt] ?? 3000;
+        console.warn(`[ChGK Service] Error fetching ${url}: ${(err as Error).message}. Retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        throw lastError;
+      }
+    }
+  }
+
+  throw lastError || new Error(`Failed to fetch ${url} after ${maxRetries} retries`);
+}
+
 // Fetch questions for a tournament (from cache or live db.chgk.info XML export)
 export async function getQuestionsForTournament(tourId: string): Promise<RawChgkQuestion[]> {
   if (tourId !== 'random' && tournamentCache.has(tourId) && (tournamentCache.get(tourId)?.length || 0) > 0) {
@@ -235,7 +268,7 @@ export async function getQuestionsForTournament(tourId: string): Promise<RawChgk
     const xmlUrl = `https://db.chgk.info/tour/${targetId}/xml`;
     console.log(`[ChGK Service] Live fetching tournament XML from ${xmlUrl}`);
 
-    const res = await fetch(xmlUrl, {
+    const res = await fetchWithRetry(xmlUrl, {
       headers: {
         'User-Agent': CHGK_USER_AGENT,
         'Accept': 'application/xml, text/xml, */*',
@@ -252,7 +285,7 @@ export async function getQuestionsForTournament(tourId: string): Promise<RawChgk
         console.log(`[ChGK Service] Fetching ${parsed.childTourIds.length} sub-tours for ${targetId}...`);
         const subTourResults = await Promise.allSettled(
           parsed.childTourIds.map(async (childId) => {
-            const childRes = await fetch(`https://db.chgk.info/tour/${childId}/xml`, {
+            const childRes = await fetchWithRetry(`https://db.chgk.info/tour/${childId}/xml`, {
               headers: {
                 'User-Agent': CHGK_USER_AGENT,
                 'Accept': 'application/xml, text/xml, */*',
