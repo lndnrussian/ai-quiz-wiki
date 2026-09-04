@@ -239,15 +239,12 @@ function shuffleArray<T>(arr: T[]): T[] {
 function appendToPregeneratedBank(newQuestions: WikiQuestion[]) {
   if (!newQuestions || newQuestions.length === 0) return;
   try {
-    const existingTitles = new Set(pregeneratedBank.map((q) => normalizeTopicString(q.articleTitle)));
     const existingQuestions = new Set(pregeneratedBank.map((q) => normalizeTopicString(q.question)));
     const toAdd: WikiQuestion[] = [];
 
     for (const q of newQuestions) {
-      const normT = normalizeTopicString(q.articleTitle);
       const normQ = normalizeTopicString(q.question);
-      if (normT && normQ && !existingTitles.has(normT) && !existingQuestions.has(normQ)) {
-        existingTitles.add(normT);
+      if (normQ && !existingQuestions.has(normQ)) {
         existingQuestions.add(normQ);
         toAdd.push(q);
       }
