@@ -429,10 +429,7 @@ function detectAnswerLeak(
             };
           }
 
-          if (
-            (qs.stem.length >= 4 && (qs.stem === answerStem || qs.stem.startsWith(answerStem) || answerStem.startsWith(qs.stem))) ||
-            (qs.word.length >= 5 && qs.word.includes(answerStem))
-          ) {
+          if (qs.stem.length >= 4 && qs.stem === answerStem) {
             if (qs.stem.length >= 4 && answerStem.length >= 4) {
               return {
                 hasLeak: true,
