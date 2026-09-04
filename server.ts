@@ -781,11 +781,33 @@ async function fetchWikiArticles(
   return articles;
 }
 
+// Helper to check if two texts share any meaningful words (length >= 4, excluding stop words)
+function hasCommonWord(textA: string, textB: string): boolean {
+  if (!textA || !textB) return false;
+  const getWords = (t: string) =>
+    new Set(
+      t
+        .toLowerCase()
+        .replace(/ё/g, 'е')
+        .replace(/[«»"'.,!?:;()[\]{}\-\/\\—–]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 4 && !RUSSIAN_STOP_WORDS.has(w))
+    );
+  const wordsA = getWords(textA);
+  if (wordsA.size === 0) return false;
+  const wordsB = getWords(textB);
+  for (const w of wordsB) {
+    if (wordsA.has(w)) return true;
+  }
+  return false;
+}
+
 // Function to ensure exactly 4 valid multiple-choice options with the correct answer
 function ensureMultipleChoiceOptions(
   correctAnswer: string,
   category: string,
-  existingOptions?: string[]
+  existingOptions?: string[],
+  currentQuestionText: string = ''
 ): string[] {
   let opts: string[] = [];
   if (existingOptions && Array.isArray(existingOptions)) {
@@ -818,18 +840,33 @@ function ensureMultipleChoiceOptions(
     (q) => q.category === category && q.correctAnswer.toLowerCase() !== correctAnswer.toLowerCase()
   );
 
-  for (const c of matchingQuestions) {
-    if (uniqueOpts.length >= 4) break;
-    if (c.options && Array.isArray(c.options)) {
-      for (const opt of c.options) {
-        if (uniqueOpts.length >= 4) break;
-        const optClean = opt.trim();
-        if (optClean && !seen.has(optClean.toLowerCase()) && optClean.toLowerCase() !== correctAnswer.toLowerCase()) {
-          seen.add(optClean.toLowerCase());
-          uniqueOpts.push(optClean);
+  const priorityQuestions = currentQuestionText
+    ? matchingQuestions.filter((q) => hasCommonWord(q.question, currentQuestionText))
+    : [];
+  const otherQuestions = matchingQuestions.filter((q) => !priorityQuestions.includes(q));
+
+  const addOptionsFromQuestions = (questions: WikiQuestion[]) => {
+    for (const c of questions) {
+      if (uniqueOpts.length >= 4) break;
+      if (c.options && Array.isArray(c.options)) {
+        for (const opt of c.options) {
+          if (uniqueOpts.length >= 4) break;
+          const optClean = opt.trim();
+          if (optClean && !seen.has(optClean.toLowerCase()) && optClean.toLowerCase() !== correctAnswer.toLowerCase()) {
+            seen.add(optClean.toLowerCase());
+            uniqueOpts.push(optClean);
+          }
         }
       }
     }
+  };
+
+  // Prioritize options from questions sharing common meaningful words
+  addOptionsFromQuestions(priorityQuestions);
+
+  // Fallback to remaining questions in the same category if still under 4 options
+  if (uniqueOpts.length < 4) {
+    addOptionsFromQuestions(otherQuestions);
   }
 
   // Fallback if somehow still not 4
@@ -865,7 +902,7 @@ function formatQuestionToRequestedType(
   format: string
 ): WikiQuestion {
   if (format === 'multiple_choice') {
-    const opts = ensureMultipleChoiceOptions(q.correctAnswer, q.category, q.options);
+    const opts = ensureMultipleChoiceOptions(q.correctAnswer, q.category, q.options, q.question);
     return {
       ...q,
       type: 'multiple_choice',
@@ -1635,7 +1672,8 @@ ${wikiContext ? `Реальные статьи Википедии для кон�
           options = ensureMultipleChoiceOptions(
             correct,
             resolved.isAll ? (q.category as string) || 'Общие знания' : resolved.canonicalName,
-            q.options as string[] | undefined
+            q.options as string[] | undefined,
+            q.question
           );
         }
 
