@@ -193,6 +193,133 @@ function parseQuestionsFromXml(
   }
 }
 
+// Parse XML containing random questions from multiple tournaments (db.chgk.info /xml/random)
+export function parseRandomChgkXml(xml: string): RawChgkQuestion[] {
+  try {
+    const data = xmlParser.parse(xml);
+    const rootNode =
+      data && typeof data === 'object'
+        ? data.search || data.tournament || data.tour || data
+        : {};
+
+    const rawQuestions: any[] =
+      rootNode && typeof rootNode === 'object' && rootNode.question
+        ? Array.isArray(rootNode.question)
+          ? rootNode.question
+          : [rootNode.question]
+        : [];
+
+    const questions: RawChgkQuestion[] = [];
+
+    for (let i = 0; i < rawQuestions.length; i++) {
+      const q = rawQuestions[i];
+      if (!q || typeof q !== 'object') continue;
+
+      const qText = cleanText(q.Question || q.question);
+      const aText = cleanText(q.Answer || q.answer);
+      if (!qText || !aText) continue;
+
+      const qNum = parseInt(String(q.Number || q.questionNumber || q.number || '1'), 10) || 1;
+
+      // Determine tourId individually for this question
+      let tourId = cleanText(
+        q.TourId ||
+        q.tourId ||
+        q.ParentTextId ||
+        q.parent_text_id ||
+        q.tour_text_id ||
+        q.Tour ||
+        q.tour
+      );
+
+      // If tourId is not provided, try to extract from TextId (e.g., "ovsch20.1_u.1-1" -> "ovsch20.1_u.1")
+      if (!tourId && q.TextId) {
+        const textId = cleanText(q.TextId);
+        const match = textId.match(/^([a-zA-Z0-9_.-]+?)(?:-\d+)?$/);
+        if (match && match[1]) {
+          tourId = match[1];
+        }
+      }
+
+      if (!tourId) {
+        tourId = 'random';
+      }
+
+      // Determine tournamentTitle individually for this question
+      let tournamentTitle = cleanText(
+        q.TournamentTitle ||
+        q.tournamentTitle ||
+        q.Tournament ||
+        q.tournament ||
+        q.TourTitle ||
+        q.tourTitle ||
+        q.TournamentName ||
+        q.tournamentName ||
+        q.Title ||
+        q.title
+      );
+
+      if (!tournamentTitle) {
+        const known = CHGK_TOURNAMENTS.find(
+          (t) => t.id === tourId || (t.id !== 'random' && (tourId.startsWith(t.id) || t.id.startsWith(tourId)))
+        );
+        if (known) {
+          tournamentTitle = known.title;
+        } else if (tourId && tourId !== 'random') {
+          tournamentTitle = `Турнир db.chgk.info (${tourId})`;
+        } else {
+          tournamentTitle = 'База «Что? Где? Когда?» (db.chgk.info)';
+        }
+      }
+
+      const rawQId = cleanText(q.QuestionId || q.questionId);
+      const id = rawQId
+        ? `chgk_${rawQId}`
+        : (tourId && tourId !== 'random'
+            ? `chgk_${tourId}_${qNum}`
+            : `chgk_rnd_${Date.now()}_${i + 1}`);
+
+      const parentTextId = cleanText(q.ParentTextId || q.parent_text_id || tourId);
+      const questionUrl =
+        parentTextId && parentTextId !== 'random'
+          ? `https://db.chgk.info/question/${parentTextId}/${qNum}`
+          : (rawQId
+              ? `https://db.chgk.info/question/${rawQId}`
+              : (tourId && tourId !== 'random' ? `https://db.chgk.info/tour/${tourId}` : 'https://db.chgk.info'));
+
+      const tournamentUrl =
+        tourId && tourId !== 'random'
+          ? `https://db.chgk.info/tour/${tourId}`
+          : 'https://db.chgk.info';
+
+      const passCriteria = cleanText(q.PassCriteria || q.passCriteria) || undefined;
+      const comments = cleanText(q.Comments || q.comments) || undefined;
+      const sources = cleanText(q.Sources || q.sources) || undefined;
+      const authors = cleanText(q.Authors || q.authors) || undefined;
+
+      questions.push({
+        id,
+        tournamentTitle,
+        tourId,
+        tournamentUrl,
+        questionUrl,
+        questionNumber: qNum,
+        question: qText,
+        answer: aText,
+        passCriteria,
+        comments,
+        sources,
+        authors,
+      });
+    }
+
+    return questions;
+  } catch (err) {
+    console.warn('[ChGK Service] Error parsing random XML batch:', err);
+    return [];
+  }
+}
+
 // Load initial questions from SQLite chgk_questions table
 export function initializeChgkCatalog() {
   try {
@@ -365,6 +492,83 @@ export async function getQuestionsForTournament(tourId: string): Promise<RawChgk
     fallbackList.push(...qs);
   }
   return fallbackList;
+}
+
+// Fetch a batch of random questions from multiple tournaments via db.chgk.info /xml/random
+export async function getRandomChgkBatch(limit: number = 100): Promise<RawChgkQuestion[]> {
+  const url = `https://db.chgk.info/xml/random/limit${limit}`;
+  console.log(`[ChGK Service] Fetching random questions batch from ${url}`);
+
+  try {
+    const res = await fetchWithRetry(url, {
+      headers: {
+        'User-Agent': CHGK_USER_AGENT,
+        'Accept': 'application/xml, text/xml, */*',
+      },
+    });
+
+    if (!res.ok) {
+      console.warn(`[ChGK Service] HTTP ${res.status} when fetching random questions from ${url}`);
+      return [];
+    }
+
+    const xml = await res.text();
+    const questions = parseRandomChgkXml(xml);
+
+    if (questions.length > 0) {
+      // Persist into SQLite chgk_questions table (INSERT OR IGNORE)
+      try {
+        const insertStmt = db.prepare(`
+          INSERT OR IGNORE INTO chgk_questions (
+            id, tournamentTitle, tourId, tournamentUrl, questionUrl,
+            questionNumber, question, answer, passCriteria, comments, sources, authors
+          ) VALUES (
+            @id, @tournamentTitle, @tourId, @tournamentUrl, @questionUrl,
+            @questionNumber, @question, @answer, @passCriteria, @comments, @sources, @authors
+          )
+        `);
+        const insertBatch = db.transaction((items: RawChgkQuestion[]) => {
+          for (const item of items) {
+            insertStmt.run({
+              id: item.id,
+              tournamentTitle: item.tournamentTitle ?? null,
+              tourId: item.tourId ?? null,
+              tournamentUrl: item.tournamentUrl ?? null,
+              questionUrl: item.questionUrl ?? null,
+              questionNumber: item.questionNumber ?? null,
+              question: item.question ?? '',
+              answer: item.answer ?? '',
+              passCriteria: item.passCriteria ?? null,
+              comments: item.comments ?? null,
+              sources: item.sources ?? null,
+              authors: item.authors ?? null,
+            });
+          }
+        });
+        insertBatch(questions);
+      } catch (dbErr) {
+        console.warn('[ChGK Service] Error saving random batch to SQLite chgk_questions:', dbErr);
+      }
+
+      // Add to in-memory cache
+      for (const q of questions) {
+        const tId = q.tourId || 'random';
+        if (!tournamentCache.has(tId)) {
+          tournamentCache.set(tId, []);
+        }
+        tournamentCache.get(tId)!.push(q);
+      }
+
+      console.log(`[ChGK Service] Successfully parsed, cached and persisted ${questions.length} questions from random batch`);
+      return questions;
+    } else {
+      console.log(`[ChGK Service] Random XML batch returned 0 questions from ${url}`);
+      return [];
+    }
+  } catch (err) {
+    console.warn(`[ChGK Service] Error fetching random questions batch from ${url}:`, (err as Error).message);
+    return [];
+  }
 }
 
 // Convert RawChgkQuestion into WikiQuestion format
