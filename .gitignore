@@ -9,3 +9,4 @@ coverage/
 data/quiz.db
 data/quiz.db-shm
 data/quiz.db-wal
+quiz.db
