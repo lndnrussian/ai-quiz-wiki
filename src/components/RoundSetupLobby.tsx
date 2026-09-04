@@ -29,6 +29,8 @@ import {
   Hourglass,
   ExternalLink,
   ShieldCheck,
+  Image as ImageIcon,
+  FileText,
 } from 'lucide-react';
 import { sound } from '../utils/sound';
 import { loadCustomTopics, addCustomTopic, removeCustomTopic } from '../utils/storage';
@@ -777,6 +779,113 @@ export const RoundSetupLobby: React.FC<RoundSetupLobbyProps> = ({
             </div>
           </div>
 
+          {/* ChGK Step 3: Handouts & Visual Material Preference */}
+          <div className="border border-[#1A1A1A] p-6 sm:p-7 bg-[#F9F7F2] space-y-4">
+            <div className="flex items-center justify-between border-b border-[#1A1A1A]/15 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="w-5 h-5 bg-[#1A1A1A] text-[#F9F7F2] font-mono text-xs font-bold flex items-center justify-center">
+                  3
+                </span>
+                <h3 className="font-serif font-bold text-lg text-[#1A1A1A]">
+                  Раздаточные материалы и иллюстрации
+                </h3>
+              </div>
+              <span className="text-[10px] font-mono uppercase tracking-wider text-[#1A1A1A]/60">
+                Фильтр раздаток
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Option 1: All questions with handouts */}
+              <button
+                type="button"
+                id="chgk-handouts-all"
+                onClick={() => {
+                  sound.playClick();
+                  updateConfig({ chgkFilterHandouts: 'all' });
+                }}
+                className={`p-5 text-left border transition-all relative flex flex-col justify-between ${
+                  (config.chgkFilterHandouts || 'all') === 'all'
+                    ? 'border-[#1A1A1A] bg-[#1A1A1A] text-[#F9F7F2] shadow-[2px_2px_0px_#1A1A1A]'
+                    : 'border-[#1A1A1A]/30 bg-transparent text-[#1A1A1A] hover:border-[#1A1A1A]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span
+                      className={`text-xs font-bold uppercase tracking-widest font-mono flex items-center gap-2 ${
+                        (config.chgkFilterHandouts || 'all') === 'all'
+                          ? 'text-[#F9F7F2]'
+                          : 'text-[#1A1A1A]'
+                      }`}
+                    >
+                      <ImageIcon className="w-4 h-4" />
+                      <span>Все вопросы</span>
+                    </span>
+                    {(config.chgkFilterHandouts || 'all') === 'all' && (
+                      <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 bg-[#F9F7F2] text-[#1A1A1A] font-bold">
+                        Включено
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className={`text-xs leading-relaxed ${
+                      (config.chgkFilterHandouts || 'all') === 'all'
+                        ? 'text-[#F9F7F2]/80'
+                        : 'text-[#1A1A1A]/70'
+                    }`}
+                  >
+                    Включает вопросы с графическими иллюстрациями, текстовыми цитатами, возможностью зума и прямыми ссылками на хостинг.
+                  </p>
+                </div>
+              </button>
+
+              {/* Option 2: Text-only questions */}
+              <button
+                type="button"
+                id="chgk-handouts-text-only"
+                onClick={() => {
+                  sound.playClick();
+                  updateConfig({ chgkFilterHandouts: 'text_only' });
+                }}
+                className={`p-5 text-left border transition-all relative flex flex-col justify-between ${
+                  config.chgkFilterHandouts === 'text_only'
+                    ? 'border-[#1A1A1A] bg-[#1A1A1A] text-[#F9F7F2] shadow-[2px_2px_0px_#1A1A1A]'
+                    : 'border-[#1A1A1A]/30 bg-transparent text-[#1A1A1A] hover:border-[#1A1A1A]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span
+                      className={`text-xs font-bold uppercase tracking-widest font-mono flex items-center gap-2 ${
+                        config.chgkFilterHandouts === 'text_only'
+                          ? 'text-[#F9F7F2]'
+                          : 'text-[#1A1A1A]'
+                      }`}
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>Только текстовые вопросы</span>
+                    </span>
+                    {config.chgkFilterHandouts === 'text_only' && (
+                      <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 bg-[#F9F7F2] text-[#1A1A1A] font-bold">
+                        Выбрано
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className={`text-xs leading-relaxed ${
+                      config.chgkFilterHandouts === 'text_only'
+                        ? 'text-[#F9F7F2]/80'
+                        : 'text-[#1A1A1A]/70'
+                    }`}
+                  >
+                    Исключает вопросы, требующие раздаточных картинок или карточек. Подходит для быстрой игры без картинок.
+                  </p>
+                </div>
+              </button>
+            </div>
+          </div>
+
           {/* ChGK Rules & Copyright Attribution Info Banner */}
           <div className="border border-[#1A1A1A] bg-[#1A1A1A]/5 p-5 space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -1260,6 +1369,9 @@ export const RoundSetupLobby: React.FC<RoundSetupLobbyProps> = ({
                 </span>
                 <span className="px-2.5 py-1 border border-[#F9F7F2]/40 text-[#F9F7F2] font-bold">
                   Ввод знатоков
+                </span>
+                <span className="px-2.5 py-1 border border-[#F9F7F2]/40 text-[#F9F7F2] font-bold">
+                  {config.chgkFilterHandouts === 'text_only' ? '📄 Только текст' : '🖼️ С раздатками'}
                 </span>
               </>
             ) : (

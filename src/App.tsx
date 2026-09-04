@@ -181,6 +181,7 @@ export default function App() {
             excludeIds: getAllExcludedIds(),
             engineSource: engine,
             chgkTournamentId: tournamentId,
+            chgkFilterHandouts: roundConfig.chgkFilterHandouts || 'all',
           }),
         });
 
@@ -646,6 +647,57 @@ export default function App() {
     }
   };
 
+  // Swap current question with a fresh one without penalty or recording a loss
+  const handleSwapQuestion = async () => {
+    if (isLoadingNext || isLoadingInitial || isAnswered) return;
+
+    sound.playClick();
+    if (questionQueue.length > 0) {
+      resetAnswerState();
+      const [nextQ, ...rest] = questionQueue;
+      setCurrentQuestion(nextQ);
+      setQuestionQueue(rest);
+      setUsedArticleTitles((prev) => Array.from(new Set([...prev, nextQ.articleTitle])));
+      if (nextQ.category) setRecentCategories((prev) => [...prev.slice(-5), nextQ.category]);
+      questionStartTimeRef.current = Date.now();
+      setChgkSecondsLeft(60);
+      setNetworkError(null);
+    } else {
+      setIsLoadingNext(true);
+      try {
+        const currentExcludes = getAllExcludedTitles();
+        const currentExcludeIds = new Set(getAllExcludedIds());
+        const seenQuestionTexts = new Set(getAllExcludedQuestionTexts().map(normalizeQuestionText));
+        const newItems = await fetchQuestions(difficulty, formatFilter, selectedCategory, 2, currentExcludes);
+
+        if (newItems.length > 0) {
+          const uniqueNew = newItems.filter((q) => {
+            const normQ = normalizeQuestionText(q.question);
+            return (
+              !seenQuestionTexts.has(normQ) &&
+              !currentExcludeIds.has(q.id) &&
+              q.id !== currentQuestion?.id
+            );
+          });
+          const candidate = uniqueNew.length > 0 ? uniqueNew[0] : newItems.find((q) => q.id !== currentQuestion?.id) || newItems[0];
+          resetAnswerState();
+          setCurrentQuestion(candidate);
+          const remaining = (uniqueNew.length > 0 ? uniqueNew : newItems).filter((q) => q.id !== candidate.id);
+          setQuestionQueue(remaining);
+          setUsedArticleTitles((prev) => Array.from(new Set([...prev, candidate.articleTitle])));
+          if (candidate.category) setRecentCategories((prev) => [...prev.slice(-5), candidate.category]);
+          questionStartTimeRef.current = Date.now();
+          setChgkSecondsLeft(60);
+          setNetworkError(null);
+        }
+      } catch (err) {
+        console.error('Failed to swap question:', err);
+      } finally {
+        setIsLoadingNext(false);
+      }
+    }
+  };
+
   // Process Completed Answer (Score, Audio, Profile Stats & Achievements, Survival lives)
   const processAnswerOutcome = (
     isCorrect: boolean,
@@ -1037,6 +1089,7 @@ export default function App() {
                 isLoadingNext={isLoadingNext}
                 isFavorite={isCurrentFavorite}
                 onToggleFavorite={handleToggleFavorite}
+                onSwapQuestion={handleSwapQuestion}
               />
             )}
           </>

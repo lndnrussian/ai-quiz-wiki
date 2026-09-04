@@ -21,6 +21,16 @@ export interface ChgkMetadata {
   tourId?: string;
 }
 
+export interface HandoutData {
+  hasHandout: boolean;
+  type: 'image' | 'text' | 'mixed' | 'missing' | 'none';
+  images: string[];
+  textHandout?: string;
+  cleanQuestion: string;
+  readerNote?: string;
+  rawHandoutSnippet?: string;
+}
+
 export interface RoundCustomizationConfig {
   engineSource: QuizEngineSource;
   gameMode: GameMode;
@@ -31,6 +41,7 @@ export interface RoundCustomizationConfig {
   blitzDurationSeconds: number; // e.g. 30, 60, 90, 120
   chgkTimerEnabled: boolean; // "опция с часами и без": true = 60s clock, false = untimed
   chgkTournamentId: string; // 'random', 'ovsch20.1_u', 'thanos20.1_u', etc.
+  chgkFilterHandouts?: 'all' | 'text_only'; // 'all' allows handouts, 'text_only' filters out handouts
 }
 
 export interface WikiQuestion {
@@ -53,6 +64,7 @@ export interface WikiQuestion {
   generatedAt?: number;
   sourceSystem?: QuizEngineSource;
   chgkMetadata?: ChgkMetadata;
+  handout?: HandoutData;
 }
 
 export interface UserAnswerRecord {

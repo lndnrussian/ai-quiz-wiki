@@ -3,6 +3,7 @@ import path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import db from './db';
 import { WikiQuestion } from '../src/types';
+import { parseQuestionHandout } from '../src/utils/handoutParser';
 
 export interface RawChgkQuestion {
   id: string;
@@ -602,6 +603,8 @@ export async function getRandomChgkBatch(limit: number = 100): Promise<RawChgkQu
 
 // Convert RawChgkQuestion into WikiQuestion format
 export function formatChgkAsWikiQuestion(raw: RawChgkQuestion): WikiQuestion {
+  const handout = parseQuestionHandout(raw.question);
+
   // Build acceptable answers array from answer and passCriteria
   const cleanAns = raw.answer.replace(/\.$/, '').trim();
   const acceptable = [cleanAns];
@@ -632,7 +635,7 @@ export function formatChgkAsWikiQuestion(raw: RawChgkQuestion): WikiQuestion {
 
   return {
     id: raw.id,
-    question: raw.question,
+    question: handout.cleanQuestion || raw.question,
     type: 'open_ended',
     correctAnswer: cleanAns,
     acceptableAnswers: acceptable,
@@ -646,6 +649,7 @@ export function formatChgkAsWikiQuestion(raw: RawChgkQuestion): WikiQuestion {
     popularityLabel: 'База «Что? Где? Когда?» (db.chgk.info)',
     generatedAt: Date.now(),
     sourceSystem: 'chgk',
+    handout,
     chgkMetadata: {
       tournamentTitle: raw.tournamentTitle,
       tournamentUrl: raw.tournamentUrl,
@@ -664,7 +668,8 @@ export function formatChgkAsWikiQuestion(raw: RawChgkQuestion): WikiQuestion {
 export async function getChgkQuestions(
   tournamentId: string = 'random',
   count: number = 1,
-  excludeIds: string[] = []
+  excludeIds: string[] = [],
+  filterHandouts: 'all' | 'text_only' = 'all'
 ): Promise<WikiQuestion[]> {
   const rawList = await getQuestionsForTournament(tournamentId);
   const excludeSet = new Set(excludeIds);
@@ -675,6 +680,17 @@ export async function getChgkQuestions(
   // If all were seen, reuse from rawList
   if (available.length === 0) {
     available = [...rawList];
+  }
+
+  // Filter out questions with handouts if requested
+  if (filterHandouts === 'text_only') {
+    const textOnly = available.filter((q) => {
+      const h = parseQuestionHandout(q.question);
+      return !h.hasHandout || h.type === 'none';
+    });
+    if (textOnly.length > 0) {
+      available = textOnly;
+    }
   }
 
   // Shuffle available questions

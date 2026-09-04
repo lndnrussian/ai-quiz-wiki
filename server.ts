@@ -1395,8 +1395,8 @@ async function startServer() {
   // ChGK questions generation/retrieval endpoint
   app.post('/api/chgk/questions', async (req, res) => {
     try {
-      const { tournamentId = 'random', count = 1, excludeIds = [] } = req.body;
-      const questions = await getChgkQuestions(tournamentId, count, excludeIds);
+      const { tournamentId = 'random', count = 1, excludeIds = [], filterHandouts = 'all' } = req.body;
+      const questions = await getChgkQuestions(tournamentId, count, excludeIds, filterHandouts);
       res.json({
         questions,
         source: 'db.chgk.info',
@@ -1419,12 +1419,13 @@ async function startServer() {
       excludeIds = [],
       engineSource = 'wikipedia',
       chgkTournamentId = 'random',
+      chgkFilterHandouts = 'all',
     } = req.body;
 
     // Handle ChGK questions mode directly
     if (engineSource === 'chgk') {
       try {
-        const questions = await getChgkQuestions(chgkTournamentId, count, excludeIds || []);
+        const questions = await getChgkQuestions(chgkTournamentId, count, excludeIds || [], chgkFilterHandouts);
         return res.json({
           questions,
           source: 'db.chgk.info',

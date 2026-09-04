@@ -1,9 +1,11 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { WikiQuestion } from '../types';
 import { MultipleChoiceOptions } from './MultipleChoiceOptions';
 import { OpenAnswerInput } from './OpenAnswerInput';
 import { WikiSourceCard } from './WikiSourceCard';
-import { ArrowRight, BookOpen, CheckSquare, MessageSquare, Loader2 } from 'lucide-react';
+import { HandoutCard } from './HandoutCard';
+import { getHandoutFromQuestion } from '../utils/handoutParser';
+import { ArrowRight, BookOpen, CheckSquare, MessageSquare, Loader2, Copy, Check, RefreshCw } from 'lucide-react';
 import { sound } from '../utils/sound';
 
 interface QuizCardProps {
@@ -20,6 +22,7 @@ interface QuizCardProps {
   isLoadingNext: boolean;
   isFavorite: boolean;
   onToggleFavorite: (q: WikiQuestion) => void;
+  onSwapQuestion?: () => void;
 }
 
 export const QuizCard: React.FC<QuizCardProps> = ({
@@ -36,7 +39,11 @@ export const QuizCard: React.FC<QuizCardProps> = ({
   isLoadingNext,
   isFavorite,
   onToggleFavorite,
+  onSwapQuestion,
 }) => {
+  const [copiedQuestion, setCopiedQuestion] = useState(false);
+  const handout = getHandoutFromQuestion(question);
+
   const difficultyLabels: Record<string, string> = {
     easy: 'Лёгкий уровень',
     medium: 'Средний уровень',
@@ -45,6 +52,26 @@ export const QuizCard: React.FC<QuizCardProps> = ({
   };
 
   const formattedNum = String(questionNumber).padStart(2, '0');
+
+  const handleCopyQuestion = () => {
+    sound.playClick();
+    let text = `Вопрос №${formattedNum}: ${handout.cleanQuestion}`;
+    if (handout.textHandout) {
+      text = `[Раздаточный материал: ${handout.textHandout}]\n\n` + text;
+    }
+    if (handout.images.length > 0) {
+      text += `\n\nРаздаточный материал (ссылки):\n` + handout.images.join('\n');
+    }
+    if (question.articleTitle) {
+      text += `\n\nИсточник: ${question.articleTitle}`;
+    }
+    if (question.articleUrl) {
+      text += `\nСсылка: ${question.articleUrl}`;
+    }
+    navigator.clipboard.writeText(text);
+    setCopiedQuestion(true);
+    setTimeout(() => setCopiedQuestion(false), 2000);
+  };
 
   // Keyboard shortcut (Space / Enter) for next question when answered
   useEffect(() => {
@@ -67,11 +94,11 @@ export const QuizCard: React.FC<QuizCardProps> = ({
   return (
     <div
       id="main-quiz-card"
-      className="w-full bg-[#F9F7F2] border border-[#1A1A1A] p-6 sm:p-10 relative select-none"
+      className="w-full bg-[#F9F7F2] border border-[#1A1A1A] p-6 sm:p-10 relative select-text"
     >
       {/* Editorial Header Row: Category Badge & Metadata */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-5 border-b border-[#1A1A1A]/15">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {/* Category Pill */}
           <span className="inline-block bg-[#1A1A1A] text-[#F9F7F2] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.25em]">
             {question.sourceSystem === 'chgk' ? '🦉 Что? Где? Когда?' : question.category || 'Энциклопедия'}
@@ -86,7 +113,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
           {question.popularityLabel && (
             <span
               title={question.popularityLabel}
-              className="text-[10px] font-medium tracking-wide text-[#1A1A1A]/80 bg-[#1A1A1A]/5 border border-[#1A1A1A]/15 px-2.5 py-0.5 flex items-center gap-1.5"
+              className="text-[10px] font-medium tracking-wide text-[#1A1A1A]/80 bg-[#1A1A1A]/5 border border-[#1A1A1A]/15 px-2.5 py-0.5 hidden sm:flex items-center gap-1.5"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-[#1A1A1A]/60"></span>
               {question.sourceSystem === 'chgk'
@@ -104,13 +131,40 @@ export const QuizCard: React.FC<QuizCardProps> = ({
           )}
         </div>
 
-        {/* Question Counter & Type Indicator */}
-        <div className="flex items-center gap-4 text-[10px] font-mono uppercase tracking-widest text-[#1A1A1A]/60">
+        {/* Header Actions: Copy Question, Swap Question & Counter */}
+        <div className="flex items-center gap-2 sm:gap-4 text-[10px] font-mono uppercase tracking-widest text-[#1A1A1A]/70">
+          {/* Copy Question Button */}
+          <button
+            onClick={handleCopyQuestion}
+            className="px-2 py-1 border border-[#1A1A1A]/30 hover:border-[#1A1A1A] hover:bg-[#1A1A1A] hover:text-[#F9F7F2] text-[#1A1A1A] text-[10px] font-mono tracking-wider flex items-center gap-1 transition-colors"
+            title="Скопировать текст вопроса в буфер обмена"
+          >
+            {copiedQuestion ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+            <span>{copiedQuestion ? 'Скопировано!' : 'Копировать'}</span>
+          </button>
+
+          {/* Swap Question Button (available before answering) */}
+          {onSwapQuestion && !isAnswered && (
+            <button
+              onClick={onSwapQuestion}
+              className="px-2 py-1 border border-[#1A1A1A]/30 hover:border-[#1A1A1A] hover:bg-[#1A1A1A] hover:text-[#F9F7F2] text-[#1A1A1A] text-[10px] font-mono tracking-wider flex items-center gap-1 transition-colors"
+              title="Заменить вопрос без потери очков"
+            >
+              <RefreshCw className="w-3 h-3" />
+              <span className="hidden sm:inline">Заменить</span>
+            </button>
+          )}
+
           <span>Вопрос {formattedNum}</span>
-          <span className="opacity-30">•</span>
-          <span>{question.sourceSystem === 'chgk' ? 'Ввод знатоков' : question.type === 'multiple_choice' ? 'Тест с вариантами' : 'Открытый вопрос'}</span>
         </div>
       </div>
+
+      {/* Handout Component (Image, Text, or Missing notice) */}
+      <HandoutCard
+        handout={handout}
+        onSwapQuestion={onSwapQuestion && !isAnswered ? onSwapQuestion : undefined}
+        tournamentUrl={question.articleUrl}
+      />
 
       {/* Main Question Display Area */}
       <div className="my-8 flex flex-col md:flex-row gap-6 items-start">
@@ -133,7 +187,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
             id="question-text"
             className="text-2xl sm:text-3xl md:text-4xl lg:text-[42px] font-serif leading-[1.2] font-normal italic text-[#1A1A1A] tracking-tight selection:bg-[#1A1A1A] selection:text-[#F9F7F2]"
           >
-            {question.question}
+            {handout.cleanQuestion || question.question}
           </h2>
 
           <div className="h-px bg-[#1A1A1A] w-20 opacity-20 my-6"></div>
