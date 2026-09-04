@@ -672,7 +672,7 @@ async function fetchWikiArticles(
   excludeTitles: string[] = [],
   difficulty: string = 'medium'
 ): Promise<WikiFetchedArticle[]> {
-  const articles: WikiFetchedArticle[] = [];
+  let articles: WikiFetchedArticle[] = [];
 
   try {
     const resolved = resolveTopic(category);
@@ -775,7 +775,7 @@ async function fetchWikiArticles(
         articles.sort((a, b) => b.pageviews - a.pageviews);
       } else if (difficulty === 'medium') {
         // Mix top and high articles
-        articles.sort((a, b) => 0.5 - Math.random());
+        articles = shuffleArray(articles);
       } else if (difficulty === 'hard') {
         articles.sort((a, b) => a.pageviews - b.pageviews);
       }
@@ -816,7 +816,7 @@ function ensureMultipleChoiceOptions(
 
   // If we already have 4 or more options, return first 4 shuffled
   if (uniqueOpts.length >= 4) {
-    return uniqueOpts.slice(0, 4).sort(() => 0.5 - Math.random());
+    return shuffleArray(uniqueOpts.slice(0, 4));
   }
 
   // Look in the curated questions pool for options belonging to the exact same category
@@ -848,7 +848,7 @@ function ensureMultipleChoiceOptions(
     }
   }
 
-  return uniqueOpts.slice(0, 4).sort(() => 0.5 - Math.random());
+  return shuffleArray(uniqueOpts.slice(0, 4));
 }
 
 // Function to strictly convert any question to the requested format (multiple_choice or open_ended)

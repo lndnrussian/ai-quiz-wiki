@@ -45,6 +45,16 @@ const CATEGORIES = [
 
 const DIFFICULTIES: DifficultyLevel[] = ['easy', 'medium', 'hard', 'expert'];
 
+// Fisher-Yates shuffle helper for true uniform randomness
+function shuffleArray<T>(arr: T[]): T[] {
+  const result = [...arr];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
 const TOPIC_SEARCH_QUERIES: Record<string, string[]> = {
   Видеоигры: [
     'Культовые компьютерные игры',
@@ -558,7 +568,7 @@ class QuestionGrowthJobManager {
       });
 
       // Shuffle categories & queries to maintain topic variety across weekly runs
-      const shuffledCategories = [...CATEGORIES].sort(() => 0.5 - Math.random());
+      const shuffledCategories = shuffleArray(CATEGORIES);
 
       outerLoop:
       for (const category of shuffledCategories) {
@@ -566,7 +576,7 @@ class QuestionGrowthJobManager {
           break outerLoop;
         }
 
-        const queries = (TOPIC_SEARCH_QUERIES[category] || []).sort(() => 0.5 - Math.random());
+        const queries = shuffleArray(TOPIC_SEARCH_QUERIES[category] || []);
 
         for (const query of queries) {
           if (totalGeneratedInRun >= batchSize || scheduledAiCallsCount >= maxCalls) {
@@ -578,7 +588,7 @@ class QuestionGrowthJobManager {
             if (!article) continue;
 
             const queryBatch: WikiQuestion[] = [];
-            const selectedDifficulties = [...DIFFICULTIES].sort(() => 0.5 - Math.random()).slice(0, 2);
+            const selectedDifficulties = shuffleArray(DIFFICULTIES).slice(0, 2);
 
             for (const diff of selectedDifficulties) {
               if (totalGeneratedInRun >= batchSize || scheduledAiCallsCount >= maxCalls) {
