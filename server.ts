@@ -840,8 +840,22 @@ function ensureMultipleChoiceOptions(
 
   // Fallback if somehow still not 4
   const backupDistractors = ['Альтернативный вариант', 'Другой вариант', 'Дополнительный вариант'];
-  for (const backup of backupDistractors) {
-    if (uniqueOpts.length >= 4) break;
+
+  function generateContextualDistractor(correctAnswer: string): string {
+    const trimmed = correctAnswer.trim();
+    const num = Number(trimmed);
+    if (trimmed !== '' && !Number.isNaN(num)) {
+      const offsets = [-5, -4, -3, -2, -1, 1, 2, 3, 4, 5];
+      const offset = offsets[Math.floor(Math.random() * offsets.length)];
+      return String(Number.isInteger(num) ? num + offset : Math.round((num + offset) * 100) / 100);
+    }
+    return backupDistractors[Math.floor(Math.random() * backupDistractors.length)];
+  }
+
+  let attempts = 0;
+  while (uniqueOpts.length < 4 && attempts < 50) {
+    attempts++;
+    const backup = generateContextualDistractor(correctAnswer);
     if (!seen.has(backup.toLowerCase())) {
       seen.add(backup.toLowerCase());
       uniqueOpts.push(backup);
