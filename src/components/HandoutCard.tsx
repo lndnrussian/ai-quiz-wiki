@@ -33,10 +33,15 @@ export const HandoutCard: React.FC<HandoutCardProps> = ({
   const [copiedLink, setCopiedLink] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState(false);
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [imageSources, setImageSources] = useState<Record<string, string>>({});
 
   if (!handout.hasHandout || handout.type === 'none') {
     return null;
   }
+
+  const getImageSrc = (originalUrl: string): string => {
+    return imageSources[originalUrl] || originalUrl;
+  };
 
   const handleCopyLink = (url: string) => {
     sound.playClick();
@@ -52,8 +57,24 @@ export const HandoutCard: React.FC<HandoutCardProps> = ({
     setTimeout(() => setCopiedText(false), 2500);
   };
 
-  const handleImageError = (url: string) => {
-    setFailedImages((prev) => ({ ...prev, [url]: true }));
+  const handleImageError = (originalUrl: string) => {
+    const currentSrc = imageSources[originalUrl] || originalUrl;
+    const proxyUrl = `/api/image-proxy?url=${encodeURIComponent(originalUrl)}`;
+
+    if (currentSrc !== proxyUrl) {
+      // First try reloading through our server-side image proxy
+      setImageSources((prev) => ({ ...prev, [originalUrl]: proxyUrl }));
+    } else {
+      // Both direct and proxy failed
+      setFailedImages((prev) => ({ ...prev, [originalUrl]: true }));
+    }
+  };
+
+  const handleRetryImage = (originalUrl: string) => {
+    sound.playClick();
+    setFailedImages((prev) => ({ ...prev, [originalUrl]: false }));
+    const proxyUrl = `/api/image-proxy?url=${encodeURIComponent(originalUrl)}&t=${Date.now()}`;
+    setImageSources((prev) => ({ ...prev, [originalUrl]: proxyUrl }));
   };
 
   const openLightbox = (url: string) => {
@@ -147,10 +168,9 @@ export const HandoutCard: React.FC<HandoutCardProps> = ({
                       className="cursor-zoom-in relative max-h-[380px] w-full flex items-center justify-center overflow-hidden bg-[#F9F7F2] border border-[#1A1A1A]/20"
                     >
                       <img
-                        src={imgUrl}
+                        src={getImageSrc(imgUrl)}
                         alt={`Раздаточный материал к вопросу ${idx + 1}`}
                         referrerPolicy="no-referrer"
-                        crossOrigin="anonymous"
                         onError={() => handleImageError(imgUrl)}
                         className="max-h-[360px] w-auto object-contain mx-auto transition-transform duration-200 group-hover:scale-[1.01]"
                       />
@@ -213,14 +233,22 @@ export const HandoutCard: React.FC<HandoutCardProps> = ({
                       Внешний фотохостинг (например, imgur) может блокировать прямые запросы или быть недоступен у вашего интернет-провайдера.
                     </p>
                     <div className="flex flex-wrap items-center justify-center gap-2 pt-1 font-mono text-xs">
+                      <button
+                        onClick={() => handleRetryImage(imgUrl)}
+                        className="px-3 py-1.5 bg-[#1A1A1A] text-[#F9F7F2] border border-[#1A1A1A] hover:bg-transparent hover:text-[#1A1A1A] flex items-center gap-1.5 font-bold transition-colors"
+                        title="Повторить загрузку через встроенный серверный прокси"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Повторить через прокси</span>
+                      </button>
                       <a
                         href={imgUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="px-3 py-1.5 bg-[#1A1A1A] text-[#F9F7F2] border border-[#1A1A1A] hover:bg-transparent hover:text-[#1A1A1A] flex items-center gap-1.5 font-bold transition-colors"
+                        className="px-3 py-1.5 border border-[#1A1A1A] bg-white hover:bg-[#1A1A1A] hover:text-[#F9F7F2] flex items-center gap-1.5 transition-colors"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
-                        <span>Открыть оригинал по ссылке</span>
+                        <span>Открыть оригинал</span>
                       </a>
                       <button
                         onClick={() => handleCopyLink(imgUrl)}
@@ -259,21 +287,33 @@ export const HandoutCard: React.FC<HandoutCardProps> = ({
           </div>
           <p className="text-xs text-[#1A1A1A]/80 font-sans leading-normal">
             В исходном пакете этот вопрос сопровождался карточкой или фотографией, не оцифрованной в базу db.chgk.info.
-            Вы можете попытаться ответить по логике текста, либо нажать «Заменить вопрос» выше без потери очков.
+            Вы можете попытаться ответить по логике текста, либо заменить вопрос без потери очков.
           </p>
-          {tournamentUrl && (
-            <div className="pt-1">
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {onSwapQuestion && (
+              <button
+                onClick={() => {
+                  sound.playClick();
+                  onSwapQuestion();
+                }}
+                className="px-3 py-1.5 bg-[#1A1A1A] text-[#F9F7F2] border border-[#1A1A1A] hover:bg-transparent hover:text-[#1A1A1A] font-mono text-xs flex items-center gap-1.5 font-bold transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Заменить этот вопрос</span>
+              </button>
+            )}
+            {tournamentUrl && (
               <a
                 href={tournamentUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs font-mono text-[#1A1A1A] underline underline-offset-2 hover:opacity-75"
+                className="px-3 py-1.5 border border-[#1A1A1A] bg-white hover:bg-[#1A1A1A] hover:text-[#F9F7F2] font-mono text-xs flex items-center gap-1.5 transition-colors"
               >
-                <span>Смотреть страницу турнира в db.chgk.info</span>
+                <span>Страница турнира</span>
                 <ExternalLink className="w-3 h-3" />
               </a>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
 
@@ -352,10 +392,9 @@ export const HandoutCard: React.FC<HandoutCardProps> = ({
             }}
           >
             <img
-              src={activeModalImage}
+              src={getImageSrc(activeModalImage)}
               alt="Увеличенный раздаточный материал"
               referrerPolicy="no-referrer"
-              crossOrigin="anonymous"
               style={{
                 transform: `scale(${zoomLevel})`,
                 transition: 'transform 0.15s ease-out',

@@ -1392,6 +1392,60 @@ async function startServer() {
     });
   });
 
+  // Image proxy to reliably deliver handout images (bypasses ISP blocks, CORS, and hotlink restrictions)
+  app.get('/api/image-proxy', async (req, res) => {
+    try {
+      const rawUrl = req.query.url as string;
+      if (!rawUrl || (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {
+        return res.status(400).send('Invalid or missing image URL parameter');
+      }
+
+      const parsed = new URL(rawUrl);
+      const allowedHosts = [
+        'db.chgk.info',
+        'i.imgur.com',
+        'imgur.com',
+        'iqga.me',
+        'upload.wikimedia.org',
+        'commons.wikimedia.org',
+        'wikipedia.org',
+      ];
+
+      const isAllowed = allowedHosts.some((h) => parsed.hostname.endsWith(h));
+      if (!isAllowed) {
+        return res.status(403).send('Host not permitted for image proxy');
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+
+      const response = await fetch(rawUrl, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Referer': parsed.origin,
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        },
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        return res.status(response.status).send(`Upstream returned ${response.status}`);
+      }
+
+      const contentType = response.headers.get('content-type') || 'image/jpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+
+      const arrayBuffer = await response.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    } catch (err) {
+      console.error('[Image Proxy] Error fetching image:', err);
+      return res.status(502).send('Error retrieving proxied image');
+    }
+  });
+
   // ChGK questions generation/retrieval endpoint
   app.post('/api/chgk/questions', async (req, res) => {
     try {

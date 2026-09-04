@@ -100,10 +100,14 @@ const xmlParser = new XMLParser({
   ignoreAttributes: false,
 });
 
-// Helper to clean XML/HTML text and decode HTML entities
+// Helper to clean XML/HTML text and decode HTML entities while preserving image handouts
 function cleanText(val: any): string {
   if (val == null) return '';
-  const text = typeof val === 'string' ? val : String(val);
+  let text = typeof val === 'string' ? val : String(val);
+  // Decode HTML-encoded <img> tags if present
+  text = text.replace(/&lt;img\s+[^&]*?src=["']([^"']+)["'][^&]*?&gt;/gi, ' (pic: $1) ');
+  // Convert standard <img> tags to (pic: URL) so image handouts are preserved
+  text = text.replace(/<img\s+[^>]*?src=["']([^"']+)["'][^>]*>/gi, ' (pic: $1) ');
   return text
     .replace(/<[^>]+>/g, '')
     .replace(/&mdash;/g, '—')
@@ -325,6 +329,7 @@ export function parseRandomChgkXml(xml: string): RawChgkQuestion[] {
 // Load initial questions from SQLite chgk_questions table
 export function initializeChgkCatalog() {
   try {
+    tournamentCache.clear();
     const questions = db.prepare('SELECT * FROM chgk_questions').all() as RawChgkQuestion[];
     for (const q of questions) {
       if (!tournamentCache.has(q.tourId)) {
